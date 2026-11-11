@@ -1,0 +1,87 @@
+[project]
+name = "rtas"
+dynamic = ["version"]
+description = "RTAS (Rhodeisland Tactical Autonomous System) - Arknights tactical analysis, data and vision toolkit"
+readme = "README.md"
+requires-python = ">=3.10,<3.14"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Ethernos Studio" }]
+keywords = [
+    "arknights",
+    "computer-vision",
+    "easyocr",
+    "game-automation",
+    "opencv",
+    "rtas",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Games/Entertainment",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+    "easyocr>=1.7.1",
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "pillow>=10.0",
+    "requests>=2.31",
+    "torch>=2.1",
+]
+
+[project.scripts]
+rtas = "rtas.cli:main"
+rtas-capture = "rtas.tools.window_capture:main"
+
+[project.urls]
+Homepage = "https://github.com/Ethernos-Studio/RTAS"
+Repository = "https://github.com/Ethernos-Studio/RTAS"
+Issues = "https://github.com/Ethernos-Studio/RTAS/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/rtas/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rtas"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "pyproject.toml",
+    "src/rtas",
+    "tests",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]

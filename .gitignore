@@ -219,5 +219,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# 临时文件
+# 测试截图输出
 __temp__/
+
+# 临时虚拟环境
+.venv*/
