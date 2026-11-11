@@ -84,6 +84,13 @@ if sys.platform == "win32":
     user32.BringWindowToTop.restype = wintypes.BOOL
     user32.SetForegroundWindow.argtypes = [wintypes.HWND]
     user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.PostMessageW.argtypes = [
+        wintypes.HWND,
+        wintypes.UINT,
+        wintypes.WPARAM,
+        wintypes.LPARAM,
+    ]
+    user32.PostMessageW.restype = wintypes.BOOL
     user32.GetForegroundWindow.argtypes = []
     user32.GetForegroundWindow.restype = wintypes.HWND
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
@@ -124,6 +131,8 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 SW_SHOW = 5
 SW_SHOWMINNOACTIVE = 7
 SW_RESTORE = 9
+WM_SYSCOMMAND = 0x0112
+SC_RESTORE = 0xF120
 PER_MONITOR_AWARE_V2 = -4
 
 _DPI_READY = False
@@ -400,9 +409,17 @@ def capture_window(
         _activate_window(window.hwnd, delay)
     elif window.minimized:
         # A minimized DirectX window has no client surface for WGC to read.
-        # Restore it for the capture, then put it back as it was.
+        # Restore it for the capture, then put it back as it was. Some games
+        # ignore ShowWindow and only respond to WM_SYSCOMMAND/SC_RESTORE.
+        user32.SetForegroundWindow(window.hwnd)
         user32.ShowWindow(window.hwnd, SW_RESTORE)
-        _wait_for_client_area(window.hwnd)
+        if not _wait_for_client_area(window.hwnd, timeout=0.8):
+            user32.PostMessageW(window.hwnd, WM_SYSCOMMAND, SC_RESTORE, 0)
+            _wait_for_client_area(window.hwnd, timeout=1.5)
+        if _client_rect(window.hwnd).width <= 0:
+            raise CaptureError(
+                "窗口处于最小化且无法自动恢复，请先手动打开游戏窗口再截图。"
+            )
         time.sleep(0.2)
         restore_minimize = True
 

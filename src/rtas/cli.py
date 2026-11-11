@@ -70,7 +70,10 @@ import numpy as np
 
 from rtas.data import (
     DataManager,
+    Item,
     ManagerConfig,
+    Operator,
+    Stage,
 )
 from rtas.vision import (
     DetectorConfig,
@@ -2433,6 +2436,10 @@ def create_parser() -> argparse.ArgumentParser:
 
 def main():
     """主入口"""
+    from rtas.tools.window_capture import _configure_console
+
+    _configure_console()
+
     parser = create_parser()
     args = parser.parse_args()
 
