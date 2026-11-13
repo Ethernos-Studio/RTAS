@@ -612,8 +612,13 @@ def run_capture_command(args: argparse.Namespace) -> int:
             print(f"错误: 未找到窗口句柄 0x{args.hwnd:08X}。", file=sys.stderr)
             return 1
         windows = [window]
-    else:
+    elif args.keyword:
+        # 用户点名要哪个窗口，就按关键字顺序来，不再替他挑
         windows = find_windows(keywords)
+    else:
+        # 默认按「像不像游戏」排序：客户端启动器（Games.exe）标题也叫「明日方舟」，
+        # 但真正的游戏窗口是 Arknights.exe，别把启动器当成游戏截下来。
+        windows = find_game_windows()
 
     if not windows:
         print(

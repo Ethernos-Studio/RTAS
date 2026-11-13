@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -236,6 +237,33 @@ def test_shell_human_mode_writes_prompt(fake_agent):
     assert "RTAS 交互模式" in text
     assert "rtas> " in text
     assert "goto <菜单>" in text
+
+
+def test_shell_capture_without_path_saves_into_temp_dir(fake_agent, tmp_path, monkeypatch):
+    """裸敲 ``capture`` 必须落盘：以前只留在内存里，退出会话就没了。"""
+    agent, _ = fake_agent
+    monkeypatch.setattr("rtas.tools.window_capture.project_root", lambda: tmp_path)
+    shell = InteractiveShell(agent, quiet=True, stdout=io.StringIO())
+
+    payload = shell.execute("capture")
+
+    assert payload["ok"] is True
+    saved = Path(payload["path"])
+    assert saved.parent == tmp_path / "__temp__"
+    assert saved.exists() and saved.stat().st_size > 0
+    assert saved.name.startswith("arknights_")
+
+
+def test_shell_capture_with_path_uses_that_path(fake_agent, tmp_path):
+    agent, _ = fake_agent
+    shell = InteractiveShell(agent, quiet=True, stdout=io.StringIO())
+    target = tmp_path / "shot.png"
+
+    payload = shell.execute(f"capture {target}")
+
+    assert payload["ok"] is True
+    assert Path(payload["path"]) == target
+    assert target.exists()
 
 
 def test_shell_status_reports_window_and_method(fake_agent):

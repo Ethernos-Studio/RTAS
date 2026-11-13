@@ -105,7 +105,9 @@ uv run rtas nav --window BlueStacks --activate
 ```
 
 - 抓图走 Windows Graphics Capture，读窗口自身的画面，**被其它窗口遮挡也能截**，不需要游戏获得焦点。
-- 同时匹配到多个窗口时，取客户区最大的那个（通常是游戏本体，其余多为启动器/工具栏）。
+- 同时匹配到多个窗口时，优先进程像游戏本体的（`Arknights.exe` / 模拟器），
+  再按客户区大小挑。客户端启动器 `Games.exe` 标题也叫「明日方舟」且窗口更大，
+  但截到它没用，所以排在游戏本体后面；想强行指定用 `--window` / `--keyword`。
 - 每次都会在 `__temp__` 下留一张 `arknights_<时间戳>.png`，方便回看当时的画面；
   `--json` 输出里的 `file` 字段就是这张图的路径。
 - `--activate` 会在截图前把窗口切到前台（某些模拟器需要）；默认不抢焦点。
@@ -288,7 +290,7 @@ rtas> help detect                              # 单个子命令的帮助
 | `status` | 窗口 / 权限 / 点击方式 |
 | `nav` / `detect` / `ocr [top]` | 直接截当前窗口做判定或识别 |
 | `goto <菜单>` / `click <x> <y>` / `key <按键>` | 复用会话里的 GameAgent，不必重新找窗口 |
-| `capture [路径]` | 截图保存 |
+| `capture [路径]` | 截图保存；不给路径就存到 `__temp__/arknights_<时间戳>.png`（和 CLI 一致） |
 | `sleep <秒>` / `help` / `quit` | 会话控制 |
 
 规则很简单：**不带 `-` 选项时走上面的快捷方式；一旦出现 `-x` / `--xxx`

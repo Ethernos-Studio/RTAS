@@ -53,6 +53,7 @@ import shlex
 import sys
 import time
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from typing import Any, TextIO
 
 from .agent import MENU_TARGETS, GameAgent
@@ -68,7 +69,7 @@ HELP_TEXT = """\
   goto <菜单>            进入指定界面（首页/编队/干员/终端/...）
   click <x> <y>          在截图坐标点击（自动换算到客户区）
   key <按键>             发送按键（esc/enter/f1...）
-  capture [路径]         截图并保存
+  capture [路径]         截图并保存（不给路径就存到 __temp__/arknights_<时间戳>.png）
   sleep <秒>             等待
   help [命令]            显示帮助；help <命令> 查看该命令的 CLI 用法
   quit / exit            退出
@@ -416,17 +417,25 @@ class InteractiveShell:
     def _capture(self, args: list[str]) -> dict[str, Any]:
         import cv2
 
+        from rtas.tools.window_capture import default_temp_dir, unique_path
+
         image = self.agent.screenshot()
-        path = args[0] if args else None
-        if path:
-            cv2.imwrite(path, image)
+        if args:
+            path = Path(args[0])
+        else:
+            # 不带路径时照 CLI 的规矩存进 <project>/__temp__：截图只有留在内存里等于没截
+            path = unique_path(default_temp_dir())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not cv2.imwrite(str(path), image):
+            raise RuntimeError(f"截图保存失败: {path}")
+
         payload = {
             "ok": True,
             "command": "capture",
-            "path": path,
+            "path": str(path),
             "size": [int(image.shape[1]), int(image.shape[0])],
         }
-        self._emit(payload, f"截图 {image.shape[1]}x{image.shape[0]}" + (f" -> {path}" if path else ""))
+        self._emit(payload, f"截图 {image.shape[1]}x{image.shape[0]} -> {path}")
         return payload
 
     # -- 会话生命周期 -----------------------------------------------------

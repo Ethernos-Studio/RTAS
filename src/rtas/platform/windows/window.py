@@ -60,10 +60,19 @@ def to_ref(info: WindowInfo) -> WindowRef:
 
 
 def _window_score(info: WindowInfo) -> tuple:
-    """窗口优先级：游戏进程 > 非最小化 > 客户区更大。"""
+    """窗口优先级：游戏本体 > 启动器 > 其它 > 非最小化 > 客户区更大。
+
+    ``Games.exe`` 是客户端启动器，标题同样叫「明日方舟」、窗口还比游戏大；
+    ``Arknights.exe`` 才是真正的游戏画面，必须排在它前面，否则截到/点到的都是启动器。
+    """
     process = (info.process or "").lower()
-    is_game_process = process in GAME_PROCESSES
-    return (not is_game_process, info.minimized, -info.client_rect.area)
+    if process == "arknights.exe":
+        rank = 0
+    elif process in GAME_PROCESSES:
+        rank = 1
+    else:
+        rank = 2
+    return (rank, info.minimized, -info.client_rect.area)
 
 
 def find_game_window(
