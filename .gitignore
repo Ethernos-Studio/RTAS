@@ -226,3 +226,4 @@ __temp__/
 .venv*/
 
 cache/
+.workbuddy/

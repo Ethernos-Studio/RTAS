@@ -379,6 +379,10 @@ class DetectorCommands:
             self._detector.shutdown()
             self._detector = None
 
+    def close(self) -> None:
+        """释放检测器（交互式会话结束时调用，与 ``_release_detector`` 等价）"""
+        self._release_detector()
+
     def detect_single(
         self,
         image_path: Path,
@@ -2099,7 +2103,7 @@ def create_parser() -> argparse.ArgumentParser:
     # shell 命令：交互式模式（只加载一次）
     shell_parser = subparsers.add_parser(
         'shell',
-        help='交互式模式（只加载一次，之后连续操作）'
+        help='交互式模式（只加载一次；命令与 CLI 完全一致）'
     )
     shell_parser.add_argument(
         '-q', '--quiet',
@@ -2713,15 +2717,26 @@ def _make_agent(args, logger: logging.Logger):
     return agent
 
 
-def run_shell_command(args, logger: logging.Logger) -> int:
-    """交互式模式：加载一次，之后连续操作。"""
+def run_shell_command(args, logger: logging.Logger,
+                      cli_config: Optional[CLIConfig] = None) -> int:
+    """交互式模式：加载一次，之后连续操作。
+
+    把已经准备好的 ``cli_config`` / ``logger`` 交给会话复用，
+    这样 shell 里执行的 CLI 命令与命令行行为一致，又不必重复加载配置与日志。
+    """
     from rtas.shell import InteractiveShell
 
     agent = _make_agent(args, logger)
+    shell = InteractiveShell(
+        agent,
+        quiet=bool(args.quiet),
+        logger=logger,
+        cli_config=cli_config,
+    )
     try:
-        shell = InteractiveShell(agent, quiet=bool(args.quiet))
         return shell.run()
     finally:
+        shell.close()
         agent.close()
 
 
@@ -2820,52 +2835,70 @@ def run_ocr_command(args, logger: logging.Logger) -> int:
 
 
 # =============================================================================
-# 主函数
+# 准备与执行：CLI 与交互式 shell 共用同一条路径
 # =============================================================================
 
-def main():
-    """主入口"""
-    from rtas.tools.window_capture import _configure_console
+def prepare(
+    config_path: Optional[Path] = None,
+    log_level: str = "INFO",
+    no_gpu: bool = False,
+    *,
+    log_stream: Optional[Any] = None,
+) -> Tuple[CLIConfig, logging.Logger]:
+    """加载配置并初始化日志。
 
-    _configure_console()
+    Args:
+        config_path: 配置文件路径（默认 ~/.rtas/config.json）
+        log_level: 日志级别
+        no_gpu: 是否禁用 GPU
+        log_stream: 控制台日志输出流（quiet 模式的 stdout 是协议通道，应传 stderr）
 
-    parser = create_parser()
-    args = parser.parse_args()
+    Returns:
+        (配置对象, Logger)
+    """
+    cli_config = CLIConfig.load(config_path or DEFAULT_CONFIG_PATH)
+    cli_config.log_level = log_level
+    cli_config.enable_gpu = not no_gpu
 
-    # --elevate：以管理员身份重新启动自身（UIPI 需要同权限级别）
-    if getattr(args, 'elevate', False):
-        from rtas.platform.windows.elevate import is_admin, relaunch_as_admin
+    log_file = DEFAULT_LOG_PATH / f"rtas_{datetime.now():%Y%m%d}.log"
+    logger = setup_logging(
+        level=log_level,
+        log_file=log_file,
+        console=True,
+        stream=log_stream,
+    )
+    logger.info(f"{APP_NAME} v{APP_VERSION}")
+    return cli_config, logger
 
-        if is_admin():
-            print("已以管理员身份运行，忽略 --elevate")
-        elif relaunch_as_admin():
-            print("已请求以管理员身份重新启动，请在 UAC 弹窗中确认。")
-            return 0
-        else:
-            print("提权失败：UAC 被拒绝或无法启动管理员进程。", file=sys.stderr)
-            return 1
 
+def dispatch(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    cli_config: Optional[CLIConfig] = None,
+    logger: Optional[logging.Logger] = None,
+    *,
+    commands: Optional[DetectorCommands] = None,
+    log_stream: Optional[Any] = None,
+) -> int:
+    """执行一个**已解析**的命令，返回退出码。
+
+    这是 CLI 与 ``rtas shell`` 共用的唯一执行入口：shell 传入常驻会话的
+    ``cli_config`` / ``logger`` / ``DetectorCommands``，于是 shell 里的
+    ``detect -i shot.png``、``data stats`` 与命令行完全一致，
+    但不会反复初始化 OCR 与检测器。
+    """
     # capture 命令不需要配置、日志、EasyOCR 或模型，独立执行
     if args.command == 'capture':
         from rtas.tools.window_capture import run_capture_command
         return run_capture_command(args)
 
-    # 加载配置
-    cli_config = CLIConfig.load(args.config)
-    cli_config.log_level = args.log_level
-    cli_config.enable_gpu = not args.no_gpu
-
-    # 设置日志；quiet 交互模式的 stdout 是协议通道，日志改走 stderr
-    log_file = DEFAULT_LOG_PATH / f"rtas_{datetime.now():%Y%m%d}.log"
-    quiet_shell = args.command == 'shell' and getattr(args, 'quiet', False)
-    logger = setup_logging(
-        level=args.log_level,
-        log_file=log_file,
-        console=True,
-        stream=sys.stderr if quiet_shell else None,
-    )
-
-    logger.info(f"{APP_NAME} v{APP_VERSION}")
+    # 加载配置 / 日志（shell 会传入已准备好的实例，这里就不重复加载）
+    if cli_config is None or logger is None:
+        prepared_config, prepared_logger = prepare(
+            args.config, args.log_level, args.no_gpu, log_stream=log_stream,
+        )
+        cli_config = cli_config or prepared_config
+        logger = logger or prepared_logger
 
     # 应用 OCR 引擎选择（命令行 > 配置文件 > 环境变量 > auto）
     configure(
@@ -2879,7 +2912,7 @@ def main():
     if args.command == 'ocr':
         return run_ocr_command(args, logger)
     if args.command == 'shell':
-        return run_shell_command(args, logger)
+        return run_shell_command(args, logger, cli_config)
     if args.command == 'click':
         return run_click_command(args, logger)
     if args.command == 'goto':
@@ -2895,8 +2928,10 @@ def main():
         )
         return 1
 
-    # 执行命令
-    commands = DetectorCommands(cli_config, logger)
+    # 执行命令；shell 传入自己的 DetectorCommands，避免重复初始化
+    owns_commands = commands is None
+    if commands is None:
+        commands = DetectorCommands(cli_config, logger)
 
     try:
         if args.command == 'detect':
@@ -3320,9 +3355,72 @@ def main():
         traceback.print_exc()
         return 1
     finally:
-        commands._release_detector()
+        # 只释放本次创建的检测器；shell 会复用同一个实例
+        if owns_commands:
+            commands._release_detector()
 
     return 0
+
+
+def run_cli(
+    argv: Optional[List[str]] = None,
+    *,
+    parser: Optional[argparse.ArgumentParser] = None,
+    cli_config: Optional[CLIConfig] = None,
+    logger: Optional[logging.Logger] = None,
+    commands: Optional[DetectorCommands] = None,
+    log_stream: Optional[Any] = None,
+) -> int:
+    """解析并执行一条命令行（等价于 ``rtas <argv>``，不含 --elevate 处理）。
+
+    供 :mod:`rtas.shell` 复用，让交互模式里的命令与命令行完全一致。
+    """
+    parser = parser or create_parser()
+    args = parser.parse_args(argv)
+
+    if not getattr(args, 'command', None):
+        parser.print_help()
+        return 0
+
+    return dispatch(
+        args, parser, cli_config, logger,
+        commands=commands, log_stream=log_stream,
+    )
+
+
+# =============================================================================
+# 主函数
+# =============================================================================
+
+def main():
+    """主入口"""
+    from rtas.tools.window_capture import _configure_console
+
+    _configure_console()
+
+    parser = create_parser()
+    args = parser.parse_args()
+
+    # --elevate：以管理员身份重新启动自身（UIPI 需要同权限级别）
+    if getattr(args, 'elevate', False):
+        from rtas.platform.windows.elevate import is_admin, relaunch_as_admin
+
+        if is_admin():
+            print("已以管理员身份运行，忽略 --elevate")
+        elif relaunch_as_admin():
+            print("已请求以管理员身份重新启动，请在 UAC 弹窗中确认。")
+            return 0
+        else:
+            print("提权失败：UAC 被拒绝或无法启动管理员进程。", file=sys.stderr)
+            return 1
+
+    if not getattr(args, 'command', None):
+        parser.print_help()
+        return 0
+
+    # quiet 交互模式的 stdout 是协议通道，日志改走 stderr
+    quiet_shell = args.command == 'shell' and getattr(args, 'quiet', False)
+    return dispatch(args, parser, log_stream=sys.stderr if quiet_shell else None)
 
 
 if __name__ == '__main__':

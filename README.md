@@ -179,6 +179,10 @@ uv run rtas goto 编队 --elevate
 
 `rtas shell` 只加载一次窗口/OCR 资源，之后连续执行命令，避免反复启动的开销。
 
+**shell 里的命令与 CLI 完全一致**：命令行怎么写，会话里就怎么写。参数由同一个
+`argparse` 解析器解析、由同一个执行函数处理，所以选项、输出、退出码都相同；
+区别只是配置、日志、检测器在会话内复用，不会再初始化一次 OCR。
+
 ```powershell
 # 人类可读的 REPL
 uv run rtas shell
@@ -186,6 +190,32 @@ uv run rtas shell
 # quiet 模式：stdin 一行一条命令，stdout 一行一条 JSON（日志走 stderr）
 uv run rtas shell -q
 ```
+
+```text
+rtas> detect -i __temp__\shot.png -f json      # 与 rtas detect 完全相同
+rtas> monitor -d 30 -n 0.5
+rtas> data operator -n "阿米娅"
+rtas> squad -i squad.png -j report.json
+rtas> ocr --list
+rtas> config --show
+rtas> --help                                   # 完整 CLI 帮助
+rtas> help detect                              # 单个子命令的帮助
+```
+
+常用窗口操作还有不带参数的快捷写法，直接作用于会话已加载的窗口：
+
+| 快捷命令 | 说明 |
+| --- | --- |
+| `status` | 窗口 / 权限 / 点击方式 |
+| `nav` / `detect` / `ocr [top]` | 直接截当前窗口做判定或识别 |
+| `goto <菜单>` / `click <x> <y>` / `key <按键>` | 复用会话里的 GameAgent，不必重新找窗口 |
+| `capture [路径]` | 截图保存 |
+| `sleep <秒>` / `help` / `quit` | 会话控制 |
+
+规则很简单：**不带 `-` 选项时走上面的快捷方式；一旦出现 `-x` / `--xxx`
+就交给 CLI 解析**（例如 `nav -i shot.png --json`、`goto 编队 --dry-run`）。
+`--config` / `--no-gpu` / `--log-level` 只影响它所在的那一条命令，
+其余命令沿用启动 shell 时的配置；`--ocr` 可以逐条切换引擎。
 
 quiet 模式适合被其它程序（UI、脚本）当作 stdio 服务调用，协议示例：
 
@@ -196,13 +226,14 @@ quiet 模式适合被其它程序（UI、脚本）当作 stdio 服务调用，�
 {"ok": true, "command": "goto", "target": "编队", "steps": [{"action": "open_nav_bar", ...}]}
 > click 640 360
 {"ok": true, "command": "click", "x": 640, "y": 360}
+> config --show
+{"ok": true, "command": "config", "exit_code": 0, "output": "当前配置:\n{...}"}
 > quit
 {"ok": true, "command": "quit", "exit": true}
 ```
 
-可用命令：`status`、`nav`、`detect`、`ocr [top]`、`goto <菜单>`、`click <x> <y>`、
-`key <按键>`、`capture [路径]`、`sleep <秒>`、`help`、`quit`。失败时返回
-`{"ok": false, "error": "..."}`。
+转发的 CLI 命令把标准输出放在 `output`、退出码放在 `exit_code`；失败时额外给出
+`{"ok": false, "error": "..."}`（`error` 取自 stderr 或日志里的告警/错误）。
 
 ## 平台支持
 

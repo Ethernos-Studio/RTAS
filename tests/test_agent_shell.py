@@ -257,6 +257,103 @@ def test_shell_rejects_bad_arguments(fake_agent):
     assert shell.execute("key")["ok"] is False
 
 
+# -- shell 与 CLI 的命令集一致 -------------------------------------------------
+
+def test_shell_runs_cli_command_with_flags(fake_agent):
+    """带 - 选项的命令交给 CLI 解析，stdout 收进 JSON 的 output 字段。"""
+    agent, _ = fake_agent
+    shell = InteractiveShell(agent, quiet=True, stdout=io.StringIO())
+    payload = shell.execute("config --show")
+    assert payload["ok"] is True and payload["exit_code"] == 0
+    assert "当前配置" in payload["output"]
+    shell.close()
+
+
+def test_shell_accepts_global_options_before_command(fake_agent, tmp_path):
+    agent, _ = fake_agent
+    shell = InteractiveShell(agent, quiet=True, stdout=io.StringIO())
+    payload = shell.execute(f"--config {tmp_path / 'config.json'} config --show")
+    assert payload["ok"] is True, payload
+    assert "enable_gpu" in payload["output"]
+    shell.close()
+
+
+def test_shell_reports_cli_argument_errors(fake_agent):
+    agent, _ = fake_agent
+    shell = InteractiveShell(agent, quiet=True, stdout=io.StringIO())
+    payload = shell.execute("config --badflag")
+    assert payload["ok"] is False
+    assert payload["exit_code"] == 2
+    assert "unrecognized arguments" in payload["error"]
+    shell.close()
+
+
+def test_shell_help_for_cli_subcommand(fake_agent):
+    agent, _ = fake_agent
+    shell = InteractiveShell(agent, quiet=True, stdout=io.StringIO())
+    payload = shell.execute("help detect")
+    assert payload["ok"] is True
+    assert "usage: rtas detect" in payload["output"]
+    shell.close()
+
+
+def test_shell_prefers_session_shortcut_without_flags(fake_agent, monkeypatch):
+    """不带参数用常驻会话；一旦带选项就按 CLI 语法解析。"""
+    agent, _ = fake_agent
+    shell = InteractiveShell(agent, quiet=True, stdout=io.StringIO())
+    monkeypatch.setattr(
+        GameAgent, "nav",
+        lambda self, image=None: (NavigationState.MAIN_MENU, _match(False)),
+    )
+    payload = shell.execute("nav")
+    assert payload["ok"] is True and payload["state"] == "main_menu"
+
+    failed = shell.execute("nav --json")  # CLI 的 nav 需要 -i
+    assert failed["ok"] is False and failed["exit_code"] == 2
+    assert "-i/--image" in failed["error"]
+    shell.close()
+
+
+def test_shell_reports_command_failure_from_logging(fake_agent, tmp_path):
+    """转发的命令失败时，error 取自日志里的真实原因。"""
+    agent, _ = fake_agent
+    missing = tmp_path / "missing.png"
+    shell = InteractiveShell(agent, quiet=True, stdout=io.StringIO())
+    payload = shell.execute(f'nav -i "{missing}"')
+    assert payload["ok"] is False and payload["exit_code"] == 1
+    assert "不存在" in payload["error"]
+    shell.close()
+
+
+def test_shell_runs_image_cli_command_quiet(fake_agent, tmp_path):
+    """shell 内执行 CLI 图像命令，协议通道只有一行 JSON。"""
+    import cv2
+
+    agent, _ = fake_agent
+    image_path = tmp_path / "shot.png"
+    cv2.imwrite(str(image_path), np.zeros((720, 1280, 3), dtype=np.uint8))
+
+    out = io.StringIO()
+    shell = InteractiveShell(agent, quiet=True, stdout=out)
+    payload = shell.execute(f'nav -i "{image_path}" --json')
+    assert payload["ok"] is True, payload
+    assert json.loads(payload["output"])["state"] in {"main_menu", "sub_menu", "unknown"}
+    assert len(out.getvalue().splitlines()) == 1
+    shell.close()
+
+
+def test_shell_tokenizer_keeps_windows_paths_and_quotes():
+    assert InteractiveShell._tokenize(r'data operator -n "阿米娅"') == [
+        "data", "operator", "-n", "阿米娅",
+    ]
+    assert InteractiveShell._tokenize(r"nav -i __temp__\shot.png") == [
+        "nav", "-i", r"__temp__\shot.png",
+    ]
+    assert InteractiveShell._tokenize("   ") == []
+    with pytest.raises(ValueError):
+        InteractiveShell._tokenize('key "esc')
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="仅 Windows 有 Win32 输入实现")
 def test_pack_xy_roundtrip():
     value = win_input.pack_xy(300, 500)
