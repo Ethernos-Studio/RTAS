@@ -216,67 +216,102 @@ class SquadAnalyzer:
         return result
 
     def _query_operator_info(self, cards: List[OperatorCard]) -> None:
-        """
-        查询干员详细信息
+        """用干员库校正名称并补全信息。
 
-        使用干员匹配器进行智能匹配，当OCR置信度低时使用模糊匹配
-
-        Args:
-            cards: 干员卡片列表
+        识别器会给出多个名称候选（不同预处理/阈值的 OCR 结果），这里逐个拿去
+        匹配干员库，取「匹配类型 + 分数 + OCR 置信度」最好的一个；同一个干员
+        只允许被一张卡片占用，避免 ``3`` 这类噪声抢走 ``Mon3tr``。
         """
         if not self._operator_matcher:
             logger.warning("干员匹配器未初始化，跳过数据库查询")
             return
 
-        for card in cards:
-            try:
-                # 使用干员匹配器获取详细信息
-                op_info = self._operator_matcher.get_operator_info(
-                    operator_name=card.name,
-                    elite_level=card.elite_level.value,
-                    level=card.level,
-                    confidence=card.name_confidence,
-                    confidence_threshold=self._confidence_threshold
+        used_ids: set = set()
+        # 先处理 OCR 置信度高的卡片，让真实名称先占位
+        for card in sorted(cards, key=lambda item: -item.name_confidence):
+            candidates = list(card.name_candidates) or [(card.name, card.name_confidence)]
+            best: Optional[Tuple[Tuple[int, float, float], Dict[str, Any], str]] = None
+
+            for text, confidence in candidates:
+                if not text:
+                    continue
+                # "Re"/"ORe" 这类短 ASCII 噪声会通过「部分匹配」误伤中文名，直接丢弃
+                if len(text) <= 3 and all(ord(ch) < 128 for ch in text):
+                    continue
+                # 高置信度时匹配器默认不做模糊匹配，OCR 错一个字就永远对不上；
+                # 这里再补一次强制模糊（仍受 0.6 相似度阈值约束）
+                attempts = [confidence]
+                if confidence >= self._confidence_threshold:
+                    attempts.append(0.0)
+
+                info = None
+                for attempt_confidence in attempts:
+                    try:
+                        info = self._operator_matcher.get_operator_info(
+                            operator_name=text,
+                            elite_level=card.elite_level.value,
+                            level=card.level,
+                            confidence=attempt_confidence,
+                            confidence_threshold=self._confidence_threshold,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - 单个候选失败不影响其它候选
+                        logger.debug(f"干员匹配失败 {text}: {exc}")
+                        info = None
+                    if info and info['matched']:
+                        break
+
+                if not info or not info['matched']:
+                    continue
+                # 单字非精确匹配太容易误伤（如 "3" -> Mon3tr），直接跳过
+                if len(text) <= 1 and info['match_type'] != 'exact':
+                    continue
+                if info['operator_id'] in used_ids:
+                    continue
+
+                rank = (
+                    2 if info['match_type'] == 'exact'
+                    else 1 if info['match_type'] == 'partial' else 0,
+                    float(info['match_score']),
+                    float(confidence),
                 )
+                if best is None or rank > best[0]:
+                    best = (rank, info, text)
 
-                if op_info['matched']:
-                    # 更新卡片名称（使用标准名称）
-                    if op_info['match_type'] in ['exact', 'partial'] or op_info['match_score'] >= 0.8:
-                        card.name = op_info['name']
+            if best is None:
+                logger.debug(f"未找到干员信息: {card.name!r}")
+                card.operator_info = {
+                    'match_score': 0.0,
+                    'match_type': 'none',
+                    'alternatives': [],
+                }
+                continue
 
-                    # 构建干员信息
-                    card.operator_info = {
-                        'id': op_info['operator_id'],
-                        'name': op_info['name'],
-                        'rarity': op_info['rarity'],
-                        'stars': op_info['rarity'],
-                        'profession': op_info['profession'],
-                        'sub_profession': op_info['sub_profession'],
-                        'position': op_info['position'],
-                        'cost': op_info['cost'],
-                        'phase_info': op_info['phase_info'],
-                        'match_score': op_info['match_score'],
-                        'match_type': op_info['match_type'],
-                    }
+            _, op_info, matched_text = best
+            used_ids.add(op_info['operator_id'])
 
-                    # 如果有备选结果，也添加进去
-                    if op_info['alternatives']:
-                        card.operator_info['alternatives'] = op_info['alternatives']
+            # 名称采用库里的标准写法（OCR 只是线索；match 已按 0.6 阈值过滤）
+            if matched_text != card.name:
+                logger.info(f"名称校正: {card.name!r} -> {op_info['name']!r} "
+                            f"({op_info['match_type']}, {op_info['match_score']:.2f})")
+            card.name = op_info['name']
+            if op_info['match_score'] > card.name_confidence:
+                card.name_confidence = float(op_info['match_score'])
 
-                    logger.debug(
-                        f"查询到干员信息: {op_info['name']} "
-                        f"(匹配类型: {op_info['match_type']}, 分数: {op_info['match_score']:.2f})"
-                    )
-                else:
-                    logger.debug(f"未找到干员信息: {card.name}")
-                    card.operator_info = {
-                        'match_score': 0.0,
-                        'match_type': 'none',
-                        'alternatives': op_info.get('alternatives', [])
-                    }
-
-            except Exception as e:
-                logger.warning(f"查询干员信息失败 {card.name}: {e}")
+            card.operator_info = {
+                'id': op_info['operator_id'],
+                'name': op_info['name'],
+                'rarity': op_info['rarity'],
+                'stars': op_info['rarity'],
+                'profession': op_info['profession'],
+                'sub_profession': op_info['sub_profession'],
+                'position': op_info['position'],
+                'cost': op_info['cost'],
+                'phase_info': op_info['phase_info'],
+                'match_score': op_info['match_score'],
+                'match_type': op_info['match_type'],
+            }
+            if op_info['alternatives']:
+                card.operator_info['alternatives'] = op_info['alternatives']
 
     def _generate_result(
         self,

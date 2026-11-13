@@ -249,8 +249,8 @@ def _client_rect(hwnd: int) -> Region:
     return Region(
         origin.x,
         origin.y,
-        rect.right - rect.left,
-        rect.bottom - rect.top,
+        max(0, rect.right - rect.left),
+        max(0, rect.bottom - rect.top),
     )
 
 
