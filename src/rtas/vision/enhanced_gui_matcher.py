@@ -44,12 +44,12 @@ import time
 import threading
 import re
 
-# 导入EasyOCR
-try:
-    import easyocr
-    EASYOCR_AVAILABLE = True
-except ImportError:
-    EASYOCR_AVAILABLE = False
+# 导入OCR后端（延迟加载，避免模块导入时付出十几秒开销）
+from .ocr_runtime import (
+    OCR_AVAILABLE,
+    create_reader,
+    cuda_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -330,7 +330,7 @@ class EnhancedOCRMatcher:
 
     def __init__(self, use_gpu: bool = True):
         self.use_gpu = use_gpu
-        self._reader: Optional[easyocr.Reader] = None
+        self._reader: Optional[Any] = None
         self._lock = threading.RLock()
         self._initialized = False
         self._preprocessor = ImagePreprocessor()
@@ -345,11 +345,10 @@ class EnhancedOCRMatcher:
             return False
 
         try:
-            import torch
-            gpu_available = torch.cuda.is_available() and self.use_gpu
+            gpu_available = self.use_gpu and cuda_available()
 
             logger.info(f"初始化增强版OCR (GPU={gpu_available})...")
-            self._reader = easyocr.Reader(
+            self._reader = create_reader(
                 ['ch_sim', 'en'],
                 gpu=gpu_available,
                 verbose=False

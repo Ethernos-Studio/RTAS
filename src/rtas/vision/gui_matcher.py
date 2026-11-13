@@ -40,12 +40,12 @@ from collections import defaultdict
 import time
 import threading
 
-# 导入EasyOCR
-try:
-    import easyocr
-    EASYOCR_AVAILABLE = True
-except ImportError:
-    EASYOCR_AVAILABLE = False
+# 导入OCR后端（延迟加载，避免模块导入时付出十几秒开销）
+from .ocr_runtime import (
+    OCR_AVAILABLE,
+    create_reader,
+    cuda_available,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -446,7 +446,7 @@ class OCRMatcher:
 
     def __init__(self, config: GUIMatcherConfig):
         self.config = config
-        self._reader: Optional[easyocr.Reader] = None
+        self._reader: Optional[Any] = None
         self._lock = threading.RLock()
         self._initialized = False
 
@@ -455,16 +455,15 @@ class OCRMatcher:
         if self._initialized:
             return True
 
-        if not EASYOCR_AVAILABLE:
-            logger.error("EasyOCR未安装")
+        if not OCR_AVAILABLE:
+            logger.error("没有可用的 OCR 引擎")
             return False
 
         try:
-            import torch
-            gpu_available = torch.cuda.is_available() and self.config.use_gpu
+            gpu_available = self.config.use_gpu and cuda_available()
 
             logger.info(f"初始化OCR (GPU={gpu_available})...")
-            self._reader = easyocr.Reader(
+            self._reader = create_reader(
                 ['ch_sim', 'en'],
                 gpu=gpu_available,
                 verbose=False
@@ -898,7 +897,7 @@ if __name__ == "__main__":
 
     # 测试OCR匹配器
     print("\nOCR匹配器测试:")
-    if EASYOCR_AVAILABLE:
+    if OCR_AVAILABLE:
         ocr_matcher = OCRMatcher(config)
         if ocr_matcher.initialize():
             print("  OCR初始化成功")

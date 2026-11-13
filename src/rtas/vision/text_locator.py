@@ -35,11 +35,8 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 
-try:
-    import easyocr
-    EASYOCR_AVAILABLE = True
-except ImportError:
-    EASYOCR_AVAILABLE = False
+# 仅探测 EasyOCR 是否安装；真正的导入发生在 initialize() 里
+from .ocr_runtime import EASYOCR_AVAILABLE, create_reader
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +129,7 @@ class TextLocator:
         """
         try:
             logger.info(f"初始化OCR引擎，语言: {self.languages}")
-            self._ocr_reader = easyocr.Reader(
+            self._ocr_reader = create_reader(
                 self.languages,
                 gpu=self.use_gpu,
                 verbose=False
@@ -181,8 +178,11 @@ class TextLocator:
             regions = []
             for result in results:
                 if detail == 0:
-                    # 简单模式: [text, confidence]
-                    text, confidence = result
+                    # 简单模式：不同后端返回 ``str`` 或 ``(text, confidence)``
+                    if isinstance(result, (list, tuple)) and len(result) >= 2:
+                        text, confidence = result[0], float(result[1])
+                    else:
+                        text, confidence = str(result), 1.0
                     bbox = []
                     center = (0, 0)
                     area = 0

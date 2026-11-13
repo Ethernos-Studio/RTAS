@@ -41,6 +41,16 @@ dependencies = [
 rtas = "rtas.cli:main"
 rtas-capture = "rtas.tools.window_capture:main"
 
+[project.optional-dependencies]
+# 可选 OCR 引擎（默认引擎 EasyOCR 已在 dependencies 中）
+paddle = [
+    "paddleocr>=2.7",
+    "paddlepaddle>=2.6",
+]
+tesseract = [
+    "pytesseract>=0.3.10",
+]
+
 [project.urls]
 Homepage = "https://github.com/Ethernos-Studio/RTAS"
 Repository = "https://github.com/Ethernos-Studio/RTAS"

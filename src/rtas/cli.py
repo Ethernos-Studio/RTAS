@@ -82,6 +82,14 @@ from rtas.vision import (
     GameStateDetector,
     detect_game_state,
 )
+from rtas.vision.ocr_runtime import (
+    OCR_AVAILABLE,
+    configure,
+    create_backend,
+    default_engine_name,
+    list_backends,
+)
+from rtas.vision.nav_detector import NavMenuButtonDetector, NavigationState
 from rtas.vision.enhanced_gui_matcher import (
     MainMenuAnalyzer,
     UIElement,
@@ -158,7 +166,8 @@ def item_rarity_sort_key(item: Item) -> Tuple[int, str]:
 def setup_logging(
     level: str = "INFO",
     log_file: Optional[Path] = None,
-    console: bool = True
+    console: bool = True,
+    stream: Optional[Any] = None,
 ) -> logging.Logger:
     """
     配置日志系统
@@ -167,6 +176,8 @@ def setup_logging(
         level: 日志级别 (DEBUG/INFO/WARNING/ERROR)
         log_file: 日志文件路径
         console: 是否输出到控制台
+        stream: 控制台输出流（默认 stdout；quiet 模式应传 stderr，
+            避免日志污染 stdio 协议）
 
     Returns:
         配置好的Logger实例
@@ -189,7 +200,7 @@ def setup_logging(
 
     # 控制台处理器
     if console:
-        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler = logging.StreamHandler(stream or sys.stdout)
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
@@ -209,6 +220,8 @@ class CLIConfig:
     save_dir: str = str(APP_DIR / "results")
     log_level: str = "INFO"
     enable_gpu: bool = True
+    ocr_engine: str = "auto"
+    ocr_url: str = ""
 
     def __post_init__(self):
         if self.detector is None:
@@ -347,8 +360,15 @@ class DetectorCommands:
                 use_gpu=self.config.enable_gpu,
                 **self.config.detector
             )
-            self._detector = GameStateDetector(detector_config)
-            self._detector.initialize()
+            detector = GameStateDetector(detector_config)
+            if not detector.initialize():
+                detector.shutdown()
+                raise RuntimeError(
+                    "OCR 引擎初始化失败：EasyOCR 模型可能缺失或已损坏。"
+                    f"请检查模型目录 {Path.home() / '.EasyOCR' / 'model'}，"
+                    "删除其中损坏的 .pth / .zip 文件后重新运行（会自动重新下载）。"
+                )
+            self._detector = detector
         return self._detector
 
     def _release_detector(self):
@@ -719,16 +739,25 @@ class DetectorCommands:
         except ImportError:
             checks.append(("OpenCV", False, "未安装"))
 
-        # 检查2: EasyOCR
-        checks.append(("EasyOCR", EASYOCR_AVAILABLE,
-                      "可用" if EASYOCR_AVAILABLE else "未安装"))
+        # 检查2: OCR 引擎
+        backends = list_backends()
+        available = [b for b in backends if b.available]
+        summary = ", ".join(
+            f"{b.name}{'✓' if b.available else '✗'}" for b in backends
+        )
+        if available:
+            info = f"当前: {default_engine_name()} | {summary}"
+        else:
+            info = f"无可用引擎 | {summary}"
+        checks.append(("OCR 引擎", bool(available), info))
 
         # 检查3: PyTorch
         try:
-            import torch
-            cuda_available = torch.cuda.is_available()
+            from rtas.vision.ocr_runtime import ensure_torch
+            torch = ensure_torch()
+            cuda = torch.cuda.is_available()
             checks.append(("PyTorch", True,
-                          f"版本 {torch.__version__}, CUDA: {cuda_available}"))
+                          f"版本 {torch.__version__}, CUDA: {cuda}"))
         except ImportError:
             checks.append(("PyTorch", False, "未安装"))
 
@@ -745,6 +774,10 @@ class DetectorCommands:
             checks.append(("检测器初始化", True, "成功"))
         except Exception as e:
             checks.append(("检测器初始化", False, str(e)))
+
+        # 检查6: 导航按钮模板
+        from rtas.vision.nav_detector import DEFAULT_TEMPLATE
+        checks.append(("导航模板", DEFAULT_TEMPLATE.is_file(), str(DEFAULT_TEMPLATE)))
 
         # 打印结果
         all_passed = True
@@ -1877,6 +1910,11 @@ def create_parser() -> argparse.ArgumentParser:
   # 测试截图
   rtas capture                     # 截取明日方舟窗口到 __temp__
   rtas capture --list              # 查看可截图的窗口
+
+  # 导航判定 / OCR 引擎
+  rtas nav -i shot.png             # 主界面还是子菜单，导航按钮在哪
+  rtas ocr --list                  # 查看可用 OCR 引擎
+  rtas ocr -i shot.png --engine paddleocr
         """
     )
 
@@ -1900,10 +1938,29 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        '--ocr',
+        choices=['auto', 'easyocr', 'paddleocr', 'umi', 'tesseract'],
+        default=None,
+        help='OCR 引擎（默认: 配置或 auto，按 easyocr→paddleocr→umi→tesseract 选择）'
+    )
+
+    parser.add_argument(
+        '--ocr-url',
+        default=None,
+        help='HTTP 类 OCR 地址（Umi-OCR 默认 http://127.0.0.1:1224）'
+    )
+
+    parser.add_argument(
         '--config',
         type=Path,
         default=DEFAULT_CONFIG_PATH,
         help=f'配置文件路径 (默认: {DEFAULT_CONFIG_PATH})'
+    )
+
+    parser.add_argument(
+        '--elevate',
+        action='store_true',
+        help='以管理员身份重新启动（后台点击游戏必需，会弹 UAC）'
     )
 
     # 子命令
@@ -2003,6 +2060,153 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         'test',
         help='运行自检'
+    )
+
+    # nav 命令：判断主界面/子菜单并给出导航按钮坐标
+    nav_parser = subparsers.add_parser(
+        'nav',
+        help='判断截图在主界面还是子菜单（导航按钮模板匹配）'
+    )
+    nav_parser.add_argument(
+        '-i', '--image',
+        type=Path,
+        required=True,
+        help='截图路径'
+    )
+    nav_parser.add_argument(
+        '-o', '--output',
+        type=Path,
+        help='可视化输出路径'
+    )
+    nav_parser.add_argument(
+        '--json',
+        action='store_true',
+        help='以 JSON 输出'
+    )
+    nav_parser.add_argument(
+        '--threshold',
+        type=float,
+        default=0.85,
+        help='导航按钮匹配阈值 (默认: 0.85)'
+    )
+
+    # shell 命令：交互式模式（只加载一次）
+    shell_parser = subparsers.add_parser(
+        'shell',
+        help='交互式模式（只加载一次，之后连续操作）'
+    )
+    shell_parser.add_argument(
+        '-q', '--quiet',
+        action='store_true',
+        help='quiet 模式：stdin 逐行命令，stdout 逐行 JSON（供程序调用）'
+    )
+    shell_parser.add_argument(
+        '-k', '--keyword',
+        action='append',
+        help='窗口标题/进程关键字（默认: 明日方舟）'
+    )
+    shell_parser.add_argument(
+        '--hwnd',
+        type=lambda v: int(v, 0),
+        help='直接指定窗口句柄'
+    )
+    shell_parser.add_argument(
+        '--method',
+        choices=['window', 'post', 'send', 'cursor'],
+        default='window',
+        help='点击方式 (默认: window 移动窗口不抢鼠标，需管理员)'
+    )
+    shell_parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='只打印将要执行的操作，不真正点击'
+    )
+    shell_parser.add_argument(
+        '--action-delay',
+        type=float,
+        default=1.0,
+        help='每个动作后的等待秒数 (默认: 1.0)'
+    )
+
+    # click 命令：点击任意坐标
+    click_parser = subparsers.add_parser(
+        'click',
+        help='在游戏窗口截图坐标点击（默认后台，不抢鼠标）'
+    )
+    click_parser.add_argument('x', type=int, help='X 坐标（与截图一致）')
+    click_parser.add_argument('y', type=int, help='Y 坐标（与截图一致）')
+    click_parser.add_argument(
+        '--method',
+        choices=['window', 'post', 'send', 'cursor'],
+        default='window',
+        help='点击方式 (默认: window，需管理员)'
+    )
+    click_parser.add_argument('--hwnd', type=lambda v: int(v, 0), help='窗口句柄')
+    click_parser.add_argument(
+        '-k', '--keyword', action='append', help='窗口关键字'
+    )
+
+    # goto 命令：一键进入某个界面
+    goto_parser = subparsers.add_parser(
+        'goto',
+        help='一键进入指定界面（首页/编队/干员/终端/...）'
+    )
+    goto_parser.add_argument('target', help='菜单名，如 首页、编队、采购中心')
+    goto_parser.add_argument(
+        '--method',
+        choices=['window', 'post', 'send', 'cursor'],
+        default='window',
+        help='点击方式 (默认: window，需管理员)'
+    )
+    goto_parser.add_argument('--hwnd', type=lambda v: int(v, 0), help='窗口句柄')
+    goto_parser.add_argument('-k', '--keyword', action='append', help='窗口关键字')
+    goto_parser.add_argument(
+        '--dry-run', action='store_true', help='只打印不点击'
+    )
+    goto_parser.add_argument(
+        '--action-delay', type=float, default=1.0, help='动作间隔秒数 (默认: 1.0)'
+    )
+
+    # key 命令：发送按键
+    key_parser = subparsers.add_parser(
+        'key',
+        help='向游戏窗口发送按键（esc/enter/f1...）'
+    )
+    key_parser.add_argument('name', help='按键名')
+    key_parser.add_argument(
+        '--method',
+        choices=['window', 'post', 'send', 'cursor'],
+        default='window',
+        help='发送方式 (默认: window，需管理员)'
+    )
+    key_parser.add_argument('--hwnd', type=lambda v: int(v, 0), help='窗口句柄')
+    key_parser.add_argument('-k', '--keyword', action='append', help='窗口关键字')
+
+    # ocr 命令：查看/试用各个 OCR 引擎
+    ocr_parser = subparsers.add_parser(
+        'ocr',
+        help='查看可用 OCR 引擎或对单张图片执行 OCR'
+    )
+    ocr_parser.add_argument(
+        '--list',
+        action='store_true',
+        help='列出所有 OCR 引擎及可用性'
+    )
+    ocr_parser.add_argument(
+        '-i', '--image',
+        type=Path,
+        help='要识别的图片'
+    )
+    ocr_parser.add_argument(
+        '--engine',
+        choices=['auto', 'easyocr', 'paddleocr', 'umi', 'tesseract'],
+        default=None,
+        help='临时指定 OCR 引擎'
+    )
+    ocr_parser.add_argument(
+        '--json',
+        action='store_true',
+        help='以 JSON 输出'
     )
 
     # gui 命令
@@ -2431,6 +2635,185 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 # =============================================================================
+# 独立命令：导航判定 / OCR 调试
+# =============================================================================
+
+_NAV_STATE_LABELS = {
+    NavigationState.MAIN_MENU: "主界面（顶部导航栏可见，无左上角导航按钮）",
+    NavigationState.SUB_MENU: "子菜单/功能页（左上角有导航按钮）",
+    NavigationState.UNKNOWN: "未知（截图可能不是主界面或子菜单）",
+}
+
+
+def run_nav_command(args, logger: logging.Logger) -> int:
+    """判断截图在主界面还是子菜单，并给出导航按钮点击坐标。"""
+    image = ImageLoader.load(args.image)
+    if image is None:
+        return 1
+
+    detector = NavMenuButtonDetector(threshold=args.threshold)
+    state, match = detector.detect_state(image)
+    payload = {
+        "file": str(args.image),
+        "state": state.value,
+        "state_label": _NAV_STATE_LABELS.get(state, state.value),
+        "found": match.found,
+        "confidence": round(match.confidence, 4),
+        "center": list(match.center) if match.found and match.center else None,
+        "bbox": list(match.bbox) if match.found and match.bbox else None,
+        "scale": round(match.scale, 3),
+    }
+
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("=" * 60)
+        print(f"文件: {args.image}")
+        print("=" * 60)
+        print(f"  导航状态: {payload['state']}")
+        print(f"  说明: {payload['state_label']}")
+        print(f"  导航按钮: {'找到' if match.found else '未找到'}")
+        print(f"  置信度: {match.confidence:.3f}")
+        if match.found and match.center:
+            print(f"  点击坐标: {match.center}（打开顶部导航栏）")
+        if not match.found and state is NavigationState.MAIN_MENU:
+            print("  提示: 当前已在主界面（顶部导航栏可见，无需该按钮）")
+        elif match.found:
+            print("  提示: 子菜单中点击该按钮打开顶部导航栏，再点「首页」回到主界面")
+        print("=" * 60)
+
+    if args.output:
+        detector.visualize(image, match, args.output)
+        print(f"可视化结果已保存: {args.output}")
+    return 0
+
+
+def _make_agent(args, logger: logging.Logger):
+    """按命令行参数构造 GameAgent。"""
+    from rtas.agent import GameAgent
+
+    agent = GameAgent(
+        keywords=getattr(args, "keyword", None),
+        hwnd=getattr(args, "hwnd", None),
+        method=getattr(args, "method", "window") or "window",
+        dry_run=bool(getattr(args, "dry_run", False)),
+        action_delay=float(getattr(args, "action_delay", 1.0)),
+    )
+    if not agent.is_admin():
+        logger.warning(
+            "当前不是管理员权限，后台点击会被 UIPI 拦截（点击无效果）。"
+            "请以管理员身份运行终端，或加 --elevate 自动提权（与 MAA 要求一致）。"
+        )
+    return agent
+
+
+def run_shell_command(args, logger: logging.Logger) -> int:
+    """交互式模式：加载一次，之后连续操作。"""
+    from rtas.shell import InteractiveShell
+
+    agent = _make_agent(args, logger)
+    try:
+        shell = InteractiveShell(agent, quiet=bool(args.quiet))
+        return shell.run()
+    finally:
+        agent.close()
+
+
+def run_click_command(args, logger: logging.Logger) -> int:
+    """点击指定坐标（与截图同一坐标系）。"""
+    agent = _make_agent(args, logger)
+    try:
+        ok = agent.click_frame(int(args.x), int(args.y))
+        print(f"点击 ({args.x}, {args.y}) -> {'成功' if ok else '失败'}")
+        return 0 if ok else 1
+    finally:
+        agent.close()
+
+
+def run_goto_command(args, logger: logging.Logger) -> int:
+    """一键进入指定界面。"""
+    agent = _make_agent(args, logger)
+    try:
+        result = agent.goto(args.target)
+        if args.dry_run or result["ok"]:
+            print(f"进入「{args.target}」: {'成功' if result['ok'] else '失败'}")
+            for step in result.get("steps", []):
+                print(f"  - {step}")
+        else:
+            print(f"进入「{args.target}」失败: {result.get('error')}")
+        return 0 if result["ok"] else 1
+    finally:
+        agent.close()
+
+
+def run_key_command(args, logger: logging.Logger) -> int:
+    """发送按键。"""
+    agent = _make_agent(args, logger)
+    try:
+        ok = agent.key(args.name)
+        print(f"按键 {args.name} -> {'成功' if ok else '失败'}")
+        return 0 if ok else 1
+    finally:
+        agent.close()
+
+
+def run_ocr_command(args, logger: logging.Logger) -> int:
+    """列出 OCR 引擎，或对单张图片执行 OCR。"""
+    if args.list or not args.image:
+        infos = list_backends()
+        if args.json:
+            print(json.dumps(
+                {"current": default_engine_name(), "backends": [i.as_dict() for i in infos]},
+                ensure_ascii=False, indent=2,
+            ))
+            return 0
+        print("=" * 70)
+        print(f"OCR 引擎（默认: {default_engine_name()}）")
+        print("=" * 70)
+        for info in infos:
+            status = "✓ 可用" if info.available else "✗ 不可用"
+            print(f"  [{status:8s}] {info.name:10s} {info.display_name:12s} {info.reason}")
+        print("=" * 70)
+        print("提示: 用 --ocr <引擎> 或 RTAS_OCR_ENGINE 环境变量切换")
+        return 0
+
+    image = ImageLoader.load(args.image)
+    if image is None:
+        return 1
+
+    engine = None if args.engine in (None, "auto") else args.engine
+    backend = create_backend(engine, languages=["ch_sim", "en"], gpu=not args.no_gpu)
+    try:
+        items = backend.recognize(image)
+    finally:
+        backend.shutdown()
+
+    if args.json:
+        print(json.dumps(
+            {
+                "file": str(args.image),
+                "engine": backend.name,
+                "texts": [
+                    {"text": i.text, "confidence": round(i.confidence, 4),
+                     "center": list(i.center) if i.center else None}
+                    for i in items
+                ],
+            },
+            ensure_ascii=False, indent=2,
+        ))
+        return 0
+
+    print("=" * 70)
+    print(f"文件: {args.image}   引擎: {backend.name}   共 {len(items)} 行")
+    print("=" * 70)
+    for i, item in enumerate(items, 1):
+        center = f"{item.center}" if item.center else "-"
+        print(f"  {i:3d}. [{item.confidence:5.2f}] {center:>14s}  {item.text}")
+    print("=" * 70)
+    return 0
+
+
+# =============================================================================
 # 主函数
 # =============================================================================
 
@@ -2443,6 +2826,19 @@ def main():
     parser = create_parser()
     args = parser.parse_args()
 
+    # --elevate：以管理员身份重新启动自身（UIPI 需要同权限级别）
+    if getattr(args, 'elevate', False):
+        from rtas.platform.windows.elevate import is_admin, relaunch_as_admin
+
+        if is_admin():
+            print("已以管理员身份运行，忽略 --elevate")
+        elif relaunch_as_admin():
+            print("已请求以管理员身份重新启动，请在 UAC 弹窗中确认。")
+            return 0
+        else:
+            print("提权失败：UAC 被拒绝或无法启动管理员进程。", file=sys.stderr)
+            return 1
+
     # capture 命令不需要配置、日志、EasyOCR 或模型，独立执行
     if args.command == 'capture':
         from rtas.tools.window_capture import run_capture_command
@@ -2453,19 +2849,44 @@ def main():
     cli_config.log_level = args.log_level
     cli_config.enable_gpu = not args.no_gpu
 
-    # 设置日志
+    # 设置日志；quiet 交互模式的 stdout 是协议通道，日志改走 stderr
     log_file = DEFAULT_LOG_PATH / f"rtas_{datetime.now():%Y%m%d}.log"
+    quiet_shell = args.command == 'shell' and getattr(args, 'quiet', False)
     logger = setup_logging(
         level=args.log_level,
         log_file=log_file,
-        console=True
+        console=True,
+        stream=sys.stderr if quiet_shell else None,
     )
 
     logger.info(f"{APP_NAME} v{APP_VERSION}")
 
-    # 检查EasyOCR
-    if not EASYOCR_AVAILABLE:
-        logger.error("EasyOCR未安装，请执行: uv sync")
+    # 应用 OCR 引擎选择（命令行 > 配置文件 > 环境变量 > auto）
+    configure(
+        engine=args.ocr or cli_config.ocr_engine or None,
+        url=args.ocr_url or cli_config.ocr_url or None,
+    )
+
+    # nav / ocr / shell / click / goto / key 是独立命令，不依赖检测器
+    if args.command == 'nav':
+        return run_nav_command(args, logger)
+    if args.command == 'ocr':
+        return run_ocr_command(args, logger)
+    if args.command == 'shell':
+        return run_shell_command(args, logger)
+    if args.command == 'click':
+        return run_click_command(args, logger)
+    if args.command == 'goto':
+        return run_goto_command(args, logger)
+    if args.command == 'key':
+        return run_key_command(args, logger)
+
+    # 检查 OCR 引擎
+    if not OCR_AVAILABLE:
+        logger.error(
+            "没有可用的 OCR 引擎。可安装 easyocr（uv sync）、PaddleOCR"
+            "（uv sync --extra paddle）、Tesseract，或启动 Umi-OCR。"
+        )
         return 1
 
     # 执行命令
@@ -2479,6 +2900,10 @@ def main():
                     visualize=args.visualize,
                     save_roi=args.save_roi
                 )
+
+                # 检测失败时返回非零退出码，避免脚本/CI 误判为成功
+                if result.state == GameState.ERROR:
+                    return 1
 
                 # 自动保存
                 if cli_config.auto_save and cli_config.save_dir:

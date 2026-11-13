@@ -49,19 +49,18 @@ import logging
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
-# 尝试导入EasyOCR，处理可选依赖
-try:
-    import easyocr
-    EASYOCR_AVAILABLE = True
-except ImportError:
-    EASYOCR_AVAILABLE = False
-    logger.warning("EasyOCR未安装，OCR功能将不可用。请执行: uv sync")
+# OCR / PyTorch 采用延迟加载：这里只探测是否安装，真正导入推迟到
+# 首次创建 OCR 后端时，避免 CLI 启动时付出十几秒的无谓开销。
+from .ocr_runtime import (
+    OCR_AVAILABLE,
+    TORCH_AVAILABLE,
+    create_reader,
+    cuda_available,
+    default_engine_name,
+)
 
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
+if not OCR_AVAILABLE:
+    logger.warning("未检测到可用的 OCR 引擎，OCR功能将不可用。请执行: uv sync")
 
 
 class GameState(Enum):
@@ -565,12 +564,14 @@ class GameStateDetector:
         >>> detector.shutdown()
     """
 
-    def __init__(self, config: Optional[DetectorConfig] = None):
+    def __init__(self, config: Optional[DetectorConfig] = None, ocr_backend: Any = None):
         """
         初始化检测器
 
         Args:
             config: 检测器配置，若为None则使用默认配置
+            ocr_backend: 可选的共享 OCR 后端（如交互模式里已加载的实例），
+                传入后本检测器不再单独加载模型
         """
         self.config = config or DetectorConfig()
         self.config.validate()
@@ -579,8 +580,9 @@ class GameStateDetector:
         self._preprocessor = ImagePreprocessor(self.config)
         self._text_matcher = TextMatcher(self.config)
 
-        # OCR引擎
-        self._reader: Optional[easyocr.Reader] = None
+        # OCR引擎（首次 initialize() 时才真正导入）
+        self._reader: Optional[Any] = ocr_backend
+        self._owns_reader = ocr_backend is None
         self._ocr_lock = threading.RLock()
 
         # 状态管理
@@ -614,37 +616,52 @@ class GameStateDetector:
         if self._initialized:
             return True
 
-        if not EASYOCR_AVAILABLE:
+        # 复用外部传入的 OCR 后端（交互模式下只加载一次模型）
+        if self._reader is not None:
+            self._initialized = True
+            logger.info("复用已加载的 OCR 后端")
+            return True
+
+        if not OCR_AVAILABLE:
             raise RuntimeError(
-                "EasyOCR未安装，无法初始化OCR引擎。"
-                "请执行: uv sync"
+                "没有可用的 OCR 引擎，无法初始化。请安装 easyocr（uv sync）、"
+                "PaddleOCR（uv sync --extra paddle）、Tesseract，或启动 Umi-OCR。"
             )
 
         try:
-            # 检测GPU可用性
+            # 加载 OCR 依赖（torch 首次导入可能需要数秒，先给出提示）
+            engine = default_engine_name()
+            logger.info(f"正在加载 OCR 依赖（引擎: {engine}，首次运行较慢，请稍候）...")
+
+            # 检测GPU可用性（此时才会真正导入 torch）
             gpu_available = False
-            if self.config.use_gpu and TORCH_AVAILABLE:
-                gpu_available = torch.cuda.is_available()
+            if self.config.use_gpu:
+                gpu_available = cuda_available()
                 if gpu_available:
                     logger.info("检测到GPU，启用GPU加速")
                 else:
                     logger.info("未检测到GPU，使用CPU")
 
-            # 初始化EasyOCR阅读器
-            logger.info("正在初始化EasyOCR...")
+            # 初始化 OCR 后端（此处才会真正导入 easyocr / paddle 等）
+            logger.info(f"正在初始化 OCR 引擎（{engine}）...")
             with self._ocr_lock:
-                self._reader = easyocr.Reader(
+                self._reader = create_reader(
                     self.config.ocr_languages,
                     gpu=gpu_available,
                     verbose=False
                 )
 
             self._initialized = True
-            logger.info("EasyOCR初始化完成")
+            logger.info(f"OCR 引擎 {engine} 初始化完成")
             return True
 
         except Exception as e:
             logger.error(f"OCR引擎初始化失败: {e}")
+            if any(k in str(e).lower() for k in ("crc", "md5", "zip", "download", "corrupt")):
+                logger.error(
+                    "EasyOCR 模型下载失败或文件损坏，请删除 %s 下的模型文件后重试",
+                    Path.home() / ".EasyOCR" / "model",
+                )
             return False
 
     def shutdown(self) -> None:
@@ -655,7 +672,8 @@ class GameStateDetector:
         建议在程序退出前调用。
         """
         with self._ocr_lock:
-            self._reader = None
+            if self._owns_reader:
+                self._reader = None
             self._initialized = False
 
         self._executor.shutdown(wait=False)
@@ -1026,10 +1044,10 @@ if __name__ == "__main__":
 
     # 检查依赖
     print(f"OpenCV版本: {cv2.__version__}")
-    print(f"EasyOCR可用: {EASYOCR_AVAILABLE}")
+    print(f"OCR可用: {OCR_AVAILABLE}")
     print(f"PyTorch可用: {TORCH_AVAILABLE}")
 
-    if not EASYOCR_AVAILABLE:
+    if not OCR_AVAILABLE:
         print("\n错误: EasyOCR未安装")
         print("请执行: uv sync")
         sys.exit(1)

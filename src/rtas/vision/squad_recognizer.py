@@ -41,15 +41,14 @@ from PIL import Image, ImageDraw, ImageFont
 
 from . import ImagePreprocessor
 
-logger = logging.getLogger(__name__)
+# torch / easyocr 延迟加载：这里只探测是否安装，真正导入推迟到使用时
+from .ocr_runtime import (
+    TORCH_AVAILABLE,
+    create_reader,
+    cuda_available,
+)
 
-# 尝试导入torch用于GPU检测
-try:
-    import torch
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
-    torch = None
+logger = logging.getLogger(__name__)
 
 
 class EliteLevel(Enum):
@@ -202,7 +201,7 @@ class SquadRecognizer:
         if not TORCH_AVAILABLE:
             return False
         try:
-            return torch.cuda.is_available()
+            return cuda_available()
         except Exception:
             return False
 
@@ -235,10 +234,9 @@ class SquadRecognizer:
                 use_gpu = False
                 logger.info("使用CPU模式")
 
-            # 初始化OCR
+            # 初始化OCR（此处才会真正导入 easyocr）
             try:
-                import easyocr
-                self._ocr_reader = easyocr.Reader(
+                self._ocr_reader = create_reader(
                     self.config.ocr_languages,
                     gpu=use_gpu
                 )
