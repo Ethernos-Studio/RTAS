@@ -54,6 +54,7 @@ class CacheConfig:
     """缓存配置"""
     enabled: bool = True
     cache_dir: Path = field(default_factory=lambda: Path("cache"))
+    structured_db_path: Optional[Path] = None
     memory_cache_ttl: int = 3600  # 内存缓存过期时间（秒）
     disk_cache_ttl: int = 86400  # 磁盘缓存过期时间（秒）
     db_path: Path = field(default_factory=lambda: Path("cache/rtas_data.db"))
@@ -161,7 +162,10 @@ class DataManager:
     def _init_structured_database(self) -> None:
         """初始化结构化数据库"""
         try:
-            db_path = self.config.cache.cache_dir / "rtas_structured.db"
+            db_path = (
+                self.config.cache.structured_db_path
+                or self.config.cache.cache_dir / "rtas_structured.db"
+            )
             self._structured_db = StructuredDatabaseManager(db_path)
             if self._structured_db.initialize():
                 logger.info(f"结构化数据库初始化完成: {db_path}")

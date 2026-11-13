@@ -69,6 +69,7 @@ import cv2
 import numpy as np
 
 from rtas.data import (
+    CacheConfig,
     DataManager,
     Item,
     ManagerConfig,
@@ -116,6 +117,7 @@ DEFAULT_LOG_PATH = APP_DIR / "logs"
 DEFAULT_DATA_REPO_PATH = APP_DIR / "ArknightsGameData"
 ASSETS_DATA_REPO_PATH = APP_DIR / "ArknightsGamedataAssets"
 DEFAULT_DATA_CACHE_DIR = APP_DIR / "cache"
+DEFAULT_STRUCTURED_DB_PATH = Path("cache") / "rtas_structured.db"
 DEFAULT_DATA_SOURCE = "assets"
 DEFAULT_DATA_SERVER = "cn"
 ASSETS_DATA_SERVERS = ("cn", "bili", "en", "jp", "kr", "tw")
@@ -923,6 +925,7 @@ class DataCommands:
                 ],
                 cache=CacheConfig(
                     cache_dir=cache_dir,
+                    structured_db_path=DEFAULT_STRUCTURED_DB_PATH,
                     db_path=cache_dir / "rtas_data.db"
                 )
             )
@@ -934,6 +937,7 @@ class DataCommands:
                 github_data_root="zh_CN",
                 cache=CacheConfig(
                     cache_dir=DEFAULT_DATA_CACHE_DIR,
+                    structured_db_path=DEFAULT_STRUCTURED_DB_PATH,
                     db_path=DEFAULT_DATA_CACHE_DIR / "rtas_data.db"
                 )
             )
@@ -1067,6 +1071,8 @@ class DataCommands:
         try:
             print("\n开始加载数据到结构化数据库...")
             print("=" * 60)
+            if manager.structured_db:
+                print(f"数据库文件: {manager.structured_db.db_path.resolve()}")
 
             def progress_callback(data_type: str, current: int, total: int):
                 """进度回调"""

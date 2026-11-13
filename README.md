@@ -80,6 +80,7 @@ uv run python -m rtas --help
 ```
 
 运行后产生的配置、缓存与日志默认位于 `~/.rtas/`（Windows 为 `%USERPROFILE%\.rtas\`）。
+结构化数据库统一位于当前工作目录下的 `cache/rtas_structured.db`。
 
 ## OCR 引擎
 

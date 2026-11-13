@@ -140,6 +140,7 @@ class SquadAnalyzer:
         """
         try:
             logger.info("初始化编队分析器...")
+            logger.info("提示：特别关注会使得OCR识别结果不准确，建议关闭特别关注。低置信度的名称将使用模糊匹配进行校正。")
 
             # 初始化编队识别器
             self._recognizer = SquadRecognizer(self.squad_config)
