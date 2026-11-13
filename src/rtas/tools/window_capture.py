@@ -127,6 +127,39 @@ IS_WINDOWS = sys.platform == "win32"
 
 DEFAULT_KEYWORDS: tuple[str, ...] = ("明日方舟", "arknights")
 DEFAULT_PREFIX = "arknights"
+
+#: 常见模拟器/游戏进程（窗口标题里未必带「明日方舟」）
+GAME_PROCESS_HINTS: tuple[str, ...] = (
+    "arknights",
+    "hd-player",      # MuMu
+    "mumuplayer",
+    "mumunx",
+    "nemu",
+    "nox",
+    "bluestacks",
+    "ldplayer",
+    "ldvbox",
+    "dmmgameplayer",
+)
+
+#: 标题里可能出现 arknights（文件名）但肯定不是游戏的进程
+NON_GAME_PROCESSES: tuple[str, ...] = (
+    "code.exe",
+    "code - insiders.exe",
+    "explorer.exe",
+    "chrome.exe",
+    "msedge.exe",
+    "firefox.exe",
+    "notepad.exe",
+    "notepad++.exe",
+    "devenv.exe",
+    "pycharm64.exe",
+    "idea64.exe",
+    "sublime_text.exe",
+    "photoshop.exe",
+    "acrobat.exe",
+    "windowsterminal.exe",
+)
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 SW_SHOW = 5
 SW_SHOWMINNOACTIVE = 7
@@ -319,6 +352,42 @@ def find_windows(
     if not include_minimized:
         matches = [window for window in matches if not window.minimized]
     return matches
+
+
+def _game_score(window: WindowInfo) -> int:
+    """给候选窗口打可信度分：进程像游戏 > 标题含「明日方舟」> 标题含 arknights。"""
+    process = (window.process or "").casefold()
+    title = window.title or ""
+    score = 0
+    if any(hint in process for hint in GAME_PROCESS_HINTS):
+        score += 50
+    if "明日方舟" in title:
+        score += 50
+    elif "arknights" in title.casefold():
+        score += 20
+    return score
+
+
+def find_game_windows(keywords: Sequence[str] | None = None) -> list[WindowInfo]:
+    """找「可截图的游戏窗口」：先按关键字找，再排掉编辑器/浏览器等。
+
+    标题里带 ``arknights_20261113_201223.png`` 的 VS Code 窗口曾经被误认成游戏，
+    所以这里既按进程名打分，也把明显不是游戏的进程剔除。返回值按可信度、
+    再按客户区面积降序排列。
+    """
+    if keywords:
+        candidates = find_windows(list(keywords))
+    else:
+        candidates = find_windows(list(DEFAULT_KEYWORDS) + list(GAME_PROCESS_HINTS))
+
+    candidates = [
+        window for window in candidates
+        if (window.process or "").casefold() not in NON_GAME_PROCESSES
+    ]
+    return sorted(
+        candidates,
+        key=lambda window: (-_game_score(window), -window.client_rect.area),
+    )
 
 
 def find_window_by_hwnd(hwnd: int) -> WindowInfo | None:

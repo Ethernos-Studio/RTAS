@@ -33,7 +33,7 @@ import pickle
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Union, Tuple
+from typing import Dict, List, Optional, Any, Callable, Sequence, Union, Tuple
 from dataclasses import dataclass, field
 import threading
 
@@ -47,6 +47,9 @@ from .github_provider import GitHubDataProvider, SyncConfig
 from .prts_provider import PRTSDataProvider, PRTSConfig
 
 logger = logging.getLogger(__name__)
+
+#: DataManager 支持按需加载的数据种类
+ALL_DATA_KINDS: Tuple[str, ...] = ("operators", "stages", "items", "enemies")
 
 
 @dataclass
@@ -119,15 +122,23 @@ class DataManager:
         # 结构化数据库管理器
         self._structured_db: Optional[StructuredDatabaseManager] = None
 
+        # 需要加载的数据种类（initialize 时确定，默认全部）
+        self._kinds: Tuple[str, ...] = ALL_DATA_KINDS
+
         self._initialized = False
 
-    def initialize(self) -> bool:
-        """
-        初始化数据管理器
+    def initialize(self, kinds: Optional[Sequence[str]] = None) -> bool:
+        """初始化数据管理器。
+
+        Args:
+            kinds: 需要加载的数据种类，可选 ``operators`` / ``stages`` / ``items`` /
+                ``enemies``；``None`` 表示全部。编队识别只用到干员，传
+                ``("operators",)`` 可以省掉关卡/物品/敌人的加载与索引。
 
         Returns:
             是否初始化成功
         """
+        self._kinds = tuple(kinds) if kinds else tuple(ALL_DATA_KINDS)
         try:
             logger.info("初始化数据管理器...")
 
@@ -148,8 +159,8 @@ class DataManager:
             # 初始化结构化数据库
             self._init_structured_database()
 
-            # 加载本地索引
-            self._load_indexes()
+            # 加载本地索引（按需，编队识别只取干员）
+            self._load_indexes(self._kinds)
 
             self._initialized = True
             logger.info("数据管理器初始化完成")
@@ -237,40 +248,36 @@ class DataManager:
             logger.error(f"数据库初始化失败: {e}")
             raise
 
-    def _load_indexes(self) -> None:
-        """加载本地数据索引"""
+    def _load_indexes(self, kinds: Optional[Sequence[str]] = None) -> None:
+        """加载本地数据索引（``kinds`` 为空表示全部）。"""
         if not self._db:
             return
 
+        selected = tuple(kinds) if kinds else tuple(ALL_DATA_KINDS)
         try:
             cursor = self._db.cursor()
 
-            # 加载干员索引
-            cursor.execute('SELECT id, data FROM operators')
-            for row in cursor.fetchall():
-                operator_data = json.loads(row['data'])
-                operator = Operator.from_dict(operator_data)
-                self._operators_index[operator.id] = operator
+            if "operators" in selected:
+                cursor.execute('SELECT id, data FROM operators')
+                for row in cursor.fetchall():
+                    operator = Operator.from_dict(json.loads(row['data']))
+                    self._operators_index[operator.id] = operator
 
-            # 加载关卡索引
-            cursor.execute('SELECT id, data FROM stages')
-            for row in cursor.fetchall():
-                stage_data = json.loads(row['data'])
-                stage = Stage.from_dict(stage_data)
-                self._stages_index[stage.id] = stage
+            if "stages" in selected:
+                cursor.execute('SELECT id, data FROM stages')
+                for row in cursor.fetchall():
+                    stage = Stage.from_dict(json.loads(row['data']))
+                    self._stages_index[stage.id] = stage
 
-            # 加载物品索引
-            cursor.execute('SELECT id, data FROM items')
-            for row in cursor.fetchall():
-                item_data = json.loads(row['data'])
-                item = Item.from_dict(item_data)
-                self._items_index[item.id] = item
+            if "items" in selected:
+                cursor.execute('SELECT id, data FROM items')
+                for row in cursor.fetchall():
+                    item = Item.from_dict(json.loads(row['data']))
+                    self._items_index[item.id] = item
 
             logger.info(
-                f"索引加载完成: "
-                f"干员={len(self._operators_index)}, "
-                f"关卡={len(self._stages_index)}, "
-                f"物品={len(self._items_index)}"
+                f"索引加载完成: 干员={len(self._operators_index)}, "
+                f"关卡={len(self._stages_index)}, 物品={len(self._items_index)}"
             )
 
         except Exception as e:
@@ -299,68 +306,77 @@ class DataManager:
 
     def load_all_data(
         self,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        kinds: Optional[Sequence[str]] = None,
+        persist: bool = True,
     ) -> bool:
-        """
-        加载所有数据
+        """从 GitHub 数据源加载数据。
 
         Args:
             progress_callback: 进度回调函数(type, current, total)
+            kinds: 要加载的种类，默认用 ``initialize`` 时确定的集合
+                （编队识别只传 ``("operators",)``，跳过关卡/物品/敌人）
+            persist: 是否写回 SQLite；只读的识别流程可以传 False 省掉逐条写库
 
         Returns:
             是否加载成功
         """
+        selected = tuple(kinds) if kinds else (self._kinds or ALL_DATA_KINDS)
         try:
-            total_types = 4  # operator, stage, item, enemy
+            total_types = sum(1 for kind in ALL_DATA_KINDS if kind in selected)
             current_type = 0
 
-            # 加载干员
-            current_type += 1
-            if progress_callback:
-                progress_callback('operator', 0, 1)
-            operators = self._github_provider.get_operators(
-                progress_callback=lambda c, t: progress_callback('operator', c, t) if progress_callback else None
-            )
-            for op in operators:
-                self._operators_index[op.id] = op
-                self._save_to_db('operators', op)
-            logger.info(f"加载了 {len(operators)} 个干员")
+            if "operators" in selected:
+                current_type += 1
+                if progress_callback:
+                    progress_callback('operator', 0, 1)
+                operators = self._github_provider.get_operators(
+                    progress_callback=lambda c, t: progress_callback('operator', c, t) if progress_callback else None
+                )
+                for op in operators:
+                    self._operators_index[op.id] = op
+                    if persist:
+                        self._save_to_db('operators', op)
+                logger.info(f"干员数据就绪: {len(operators)} 条")
 
-            # 加载关卡
-            current_type += 1
-            if progress_callback:
-                progress_callback('stage', 0, 1)
-            stages = self._github_provider.get_stages(
-                progress_callback=lambda c, t: progress_callback('stage', c, t) if progress_callback else None
-            )
-            for stage in stages:
-                self._stages_index[stage.id] = stage
-                self._save_to_db('stages', stage)
-            logger.info(f"加载了 {len(stages)} 个关卡")
+            if "stages" in selected:
+                current_type += 1
+                if progress_callback:
+                    progress_callback('stage', 0, 1)
+                stages = self._github_provider.get_stages(
+                    progress_callback=lambda c, t: progress_callback('stage', c, t) if progress_callback else None
+                )
+                for stage in stages:
+                    self._stages_index[stage.id] = stage
+                    if persist:
+                        self._save_to_db('stages', stage)
+                logger.info(f"关卡数据就绪: {len(stages)} 条")
 
-            # 加载物品
-            current_type += 1
-            if progress_callback:
-                progress_callback('item', 0, 1)
-            items = self._github_provider.get_items(
-                progress_callback=lambda c, t: progress_callback('item', c, t) if progress_callback else None
-            )
-            for item in items:
-                self._items_index[item.id] = item
-                self._save_to_db('items', item)
-            logger.info(f"加载了 {len(items)} 个物品")
+            if "items" in selected:
+                current_type += 1
+                if progress_callback:
+                    progress_callback('item', 0, 1)
+                items = self._github_provider.get_items(
+                    progress_callback=lambda c, t: progress_callback('item', c, t) if progress_callback else None
+                )
+                for item in items:
+                    self._items_index[item.id] = item
+                    if persist:
+                        self._save_to_db('items', item)
+                logger.info(f"物品数据就绪: {len(items)} 条")
 
-            # 加载敌人
-            current_type += 1
-            if progress_callback:
-                progress_callback('enemy', 0, 1)
-            enemies = self._github_provider.get_enemies(
-                progress_callback=lambda c, t: progress_callback('enemy', c, t) if progress_callback else None
-            )
-            for enemy in enemies:
-                self._enemies_index[enemy.id] = enemy
-                self._save_to_db('enemies', enemy)
-            logger.info(f"加载了 {len(enemies)} 个敌人")
+            if "enemies" in selected:
+                current_type += 1
+                if progress_callback:
+                    progress_callback('enemy', 0, 1)
+                enemies = self._github_provider.get_enemies(
+                    progress_callback=lambda c, t: progress_callback('enemy', c, t) if progress_callback else None
+                )
+                for enemy in enemies:
+                    self._enemies_index[enemy.id] = enemy
+                    if persist:
+                        self._save_to_db('enemies', enemy)
+                logger.info(f"敌人数据就绪: {len(enemies)} 条")
 
             if progress_callback:
                 progress_callback('complete', current_type, total_types)

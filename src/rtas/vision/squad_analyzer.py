@@ -84,6 +84,8 @@ class SquadAnalysisResult:
                     'level': op.level,
                     'position': op.grid_position,
                     'confidence': op.name_confidence,
+                    'potential': op.potential,
+                    'potential_confidence': op.potential_confidence,
                     'info': op.operator_info
                 }
                 for op in self.operators
@@ -94,6 +96,10 @@ class SquadAnalysisResult:
                     'elite_level': op.elite_level.value,
                     'level': op.level,
                     'cost': op.operator_info.get('cost', 0) if op.operator_info else 0,
+                    'cost_base': op.operator_info.get('cost_base') if op.operator_info else None,
+                    'potential': op.operator_info.get('potential') if op.operator_info else op.potential,
+                    'max_potential': op.operator_info.get('max_potential') if op.operator_info else None,
+                    'potential_source': op.operator_info.get('potential_source') if op.operator_info else None,
                     'profession': op.operator_info.get('profession', 'Unknown') if op.operator_info else 'Unknown',
                     'operator_id': op.operator_info.get('id', '') if op.operator_info else '',
                     'stars': op.operator_info.get('stars', 0) if op.operator_info else 0,
@@ -113,7 +119,9 @@ class SquadAnalyzer:
     def __init__(
         self,
         squad_config: Optional[SquadConfig] = None,
-        data_config: Optional[ManagerConfig] = None
+        data_config: Optional[ManagerConfig] = None,
+        potential: Optional[int] = None,
+        default_potential: int = 0
     ):
         """
         初始化编队分析器
@@ -121,9 +129,15 @@ class SquadAnalyzer:
         Args:
             squad_config: 编队识别配置
             data_config: 数据管理器配置
+            potential: 强制所有干员按这个潜能计算（忽略卡面徽章）；None = 逐个读徽章
+            default_potential: 徽章读不出来时的假定潜能（默认 0：没有潜能减费）
         """
         self.squad_config = squad_config or SquadConfig()
         self.data_config = data_config or ManagerConfig()
+        #: 计算部署费用时假定的潜能等级；None 表示逐个用卡面徽章读到的等级
+        self.potential = potential
+        #: 徽章没读出来（或截图上没有徽章）时按这个等级算
+        self.default_potential = default_potential
 
         self._recognizer: Optional[SquadRecognizer] = None
         self._data_manager: Optional[DataManager] = None
@@ -148,15 +162,16 @@ class SquadAnalyzer:
                 logger.error("编队识别器初始化失败")
                 return False
 
-            # 初始化数据管理器
+            # 初始化数据管理器：编队识别只用干员，别把关卡/物品/敌人一起读进来
             self._data_manager = DataManager(self.data_config)
-            if not self._data_manager.initialize():
+            if not self._data_manager.initialize(kinds=("operators",)):
                 logger.warning("数据管理器初始化失败，将只进行基础识别")
                 # 继续，因为基础识别仍然可以工作
             else:
-                # 加载干员数据
+                # 加载干员数据（只这一种）
                 logger.info("加载干员数据...")
-                if not self._data_manager.load_all_data():
+                # persist=False：识别只用内存索引，不必逐条写回 SQLite
+                if not self._data_manager.load_all_data(kinds=("operators",), persist=False):
                     logger.warning("加载干员数据失败")
                 else:
                     # 初始化干员匹配器
@@ -231,6 +246,8 @@ class SquadAnalyzer:
         for card in sorted(cards, key=lambda item: -item.name_confidence):
             candidates = list(card.name_candidates) or [(card.name, card.name_confidence)]
             best: Optional[Tuple[Tuple[int, float, float], Dict[str, Any], str]] = None
+            # 潜能：卡面徽章优先；命令行 --potential 可以强制覆盖；都没有才用兜底值
+            card_potential, potential_source = self._resolve_potential(card)
 
             for text, confidence in candidates:
                 if not text:
@@ -253,6 +270,7 @@ class SquadAnalyzer:
                             level=card.level,
                             confidence=attempt_confidence,
                             confidence_threshold=self._confidence_threshold,
+                            potential=card_potential,
                         )
                     except Exception as exc:  # noqa: BLE001 - 单个候选失败不影响其它候选
                         logger.debug(f"干员匹配失败 {text}: {exc}")
@@ -306,12 +324,49 @@ class SquadAnalyzer:
                 'sub_profession': op_info['sub_profession'],
                 'position': op_info['position'],
                 'cost': op_info['cost'],
+                'cost_base': op_info.get('cost_base'),
+                'potential': op_info.get('potential'),
+                'max_potential': op_info.get('max_potential'),
+                'potential_source': potential_source,
+                'potential_confidence': card.potential_confidence,
+                'cost_reduction_by_potential': op_info.get('cost_reduction_by_potential') or [],
                 'phase_info': op_info['phase_info'],
                 'match_score': op_info['match_score'],
                 'match_type': op_info['match_type'],
             }
             if op_info['alternatives']:
                 card.operator_info['alternatives'] = op_info['alternatives']
+
+    def _resolve_potential(self, card: OperatorCard) -> Tuple[int, str]:
+        """决定这张卡按几潜算费用，并说明这个潜能是哪来的。
+
+        Returns:
+            ``(潜能等级, 来源)``，来源是 ``badge`` / ``argument`` / ``default``
+        """
+        if self.potential is not None:
+            return int(self.potential), 'argument'
+        if card.potential is not None:
+            return int(card.potential), 'badge'
+        return int(self.default_potential), 'default'
+
+    @staticmethod
+    def _potential_text(info: Dict[str, Any]) -> str:
+        """把潜能等级 + 来源写成一句人话（读不出徽章时说明是按默认值算的）。"""
+        potential = info.get('potential')
+        if potential is None:
+            return ''
+        max_potential = info.get('max_potential')
+        if max_potential and potential >= max_potential:
+            label = '满潜'
+        else:
+            label = f"{potential} 潜"
+        source = info.get('potential_source', 'badge')
+        if source == 'argument':
+            return f"{label}（--potential 指定）"
+        if source == 'default':
+            return f"{label}（卡面没读到徽章，按默认值算）"
+        confidence = info.get('potential_confidence') or 0.0
+        return f"{label}（卡面徽章，相似度 {confidence:.0%}）"
 
     def _generate_result(
         self,
@@ -410,10 +465,16 @@ class SquadAnalyzer:
                 sub_profession = info.get('sub_profession', 'Unknown')
                 position = info.get('position', 'Unknown')
                 cost = info.get('cost', '-')
+                cost_base = info.get('cost_base')
+                potential_text = self._potential_text(info)
 
                 print(f"   星级: {'★' * stars if stars else 'Unknown'}")
                 print(f"   职业: {profession} ({sub_profession})")
                 print(f"   位置: {position}")
+                if potential_text:
+                    print(f"   潜能: {potential_text}")
+                if cost_base and cost_base != cost and isinstance(cost, int):
+                    cost = f"{cost}（{cost - cost_base:+d}；0潜 {cost_base}）"
                 print(f"   费用: {cost}")
 
                 # 显示匹配信息
@@ -580,7 +641,9 @@ class SquadAnalyzer:
             - index: 序号
             - name: 干员名称
             - operator_id: 游戏内部ID
-            - cost: 部署费用
+            - cost: 部署费用（已按潜能减费）
+            - cost_base: 0 潜时的部署费用
+            - potential: 计算用的潜能等级
             - profession: 职业
             - elite_level: 精英化等级
             - level: 等级
@@ -596,6 +659,8 @@ class SquadAnalyzer:
                 'name': card.name,
                 'operator_id': info.get('id', ''),
                 'cost': info.get('cost', 0),
+                'cost_base': info.get('cost_base'),
+                'potential': info.get('potential'),
                 'profession': info.get('profession', 'Unknown'),
                 'elite_level': card.elite_level.value,
                 'level': card.level,
@@ -613,17 +678,22 @@ class SquadAnalyzer:
         """
         deploy_list = self.get_deploy_list(result)
 
-        print("\n" + "=" * 80)
-        print("待部署区干员列表（按费用→职业→ID排序）")
-        print("=" * 80)
-        print(f"{'序号':<6}{'干员名称':<12}{'费用':<8}{'职业':<12}{'精英':<8}{'等级':<8}{'ID':<20}")
-        print("-" * 80)
+        print("\n" + "=" * 88)
+        print("待部署区干员列表（按费用→职业→ID排序，费用已按潜能减费）")
+        print("=" * 88)
+        print(f"{'序号':<6}{'干员名称':<12}{'费用':<8}{'潜能':<8}{'职业':<12}{'精英':<8}{'等级':<8}{'ID':<20}")
+        print("-" * 88)
 
         for op in deploy_list:
             elite_str = f"E{op['elite_level']}"
-            print(f"{op['index']:<6}{op['name']:<12}{op['cost']:<8}{op['profession']:<12}{elite_str:<8}{op['level']:<8}{op['operator_id']:<20}")
+            cost = op.get('cost')
+            cost_str = '-' if cost is None else str(cost)
+            potential = op.get('potential')
+            potential_str = '-' if potential is None else str(potential)
+            print(f"{op['index']:<6}{op['name']:<12}{cost_str:<8}{potential_str:<8}"
+                  f"{op['profession']:<12}{elite_str:<8}{op['level']:<8}{op['operator_id']:<20}")
 
-        print("=" * 80)
+        print("=" * 88)
         print(f"总计: {len(deploy_list)} 名干员")
 
     def shutdown(self) -> None:

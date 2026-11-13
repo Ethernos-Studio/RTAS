@@ -50,6 +50,11 @@ paddle = [
 tesseract = [
     "pytesseract>=0.3.10",
 ]
+# CUDA 版 PyTorch（EasyOCR 跑 GPU 用）：uv sync --extra gpu
+gpu = [
+    "torch>=2.1",
+    "torchvision>=0.16",
+]
 
 [project.urls]
 Homepage = "https://github.com/Ethernos-Studio/RTAS"
@@ -95,3 +100,15 @@ ignore = ["E501"]
 minversion = "8.0"
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[[tool.uv.index]]
+# PyTorch 官方 CUDA 12.6 源；explicit 表示只有显式引用它的依赖才会走这里
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+# 只有装了 gpu extra 时才从 CUDA 源取 torch / torchvision，
+# 普通 `uv sync` 仍然拿 PyPI 的 CPU 版，不影响无显卡环境
+torch = [{ index = "pytorch-cu126", extra = "gpu" }]
+torchvision = [{ index = "pytorch-cu126", extra = "gpu" }]

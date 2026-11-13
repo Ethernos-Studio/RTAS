@@ -19,13 +19,14 @@ from rtas.tools.window_capture import CaptureError, Region, WindowInfo
 LOGGER = logging.getLogger("rtas.test")
 
 
-def _window(hwnd: int, title: str, width: int, height: int) -> WindowInfo:
+def _window(hwnd: int, title: str, width: int, height: int,
+            process: str = "arknights.exe") -> WindowInfo:
     rect = Region(0, 0, width, height)
     return WindowInfo(
         hwnd=hwnd,
         title=title,
         class_name="UnityWndClass",
-        process="arknights.exe",
+        process=process,
         rect=rect,
         client_rect=rect,
         minimized=False,
@@ -82,6 +83,27 @@ def test_grab_game_window_uses_keyword(captured):
     assert captured["keywords"] == ["BlueStacks"]
 
 
+def test_grab_game_window_ignores_editor_windows(captured):
+    """标题里带 arknights_xxx.png 的 VS Code 窗口不能当成游戏。"""
+    editor = _window(9, "arknights_20261113_192526.png - RTAS - Visual Studio Code",
+                     1902, 1011, process="Code.exe")
+    captured["windows"] = [editor]
+
+    with pytest.raises(CaptureError):
+        cli.grab_game_window(_fake_args(), LOGGER)
+
+
+def test_grab_game_window_prefers_game_process(captured):
+    """模拟器进程 + 「明日方舟」标题的可信度高于仅标题沾边的窗口。"""
+    viewer = _window(4, "arknights 截图查看器", 1600, 900, process="imageglass.exe")
+    game = _window(5, "明日方舟", 1280, 720, process="HD-Player.exe")
+    captured["windows"] = [viewer, game]
+
+    cli.grab_game_window(_fake_args(), LOGGER)
+
+    assert captured["captured"].hwnd == 5
+
+
 def test_grab_game_window_reports_missing_window(captured):
     captured["windows"] = []
 
@@ -93,7 +115,9 @@ def test_grab_game_window_reports_missing_window(captured):
 
 
 def test_screenshot_commands_are_the_image_ones():
-    assert cli.SCREENSHOT_COMMANDS == {'detect', 'nav', 'ocr', 'gui', 'main-menu', 'squad'}
+    assert cli.SCREENSHOT_COMMANDS == {
+        'detect', 'nav', 'ocr', 'gui', 'main-menu', 'squad', 'potential',
+    }
 
 
 def test_dispatch_captures_when_image_missing(tmp_path, monkeypatch):

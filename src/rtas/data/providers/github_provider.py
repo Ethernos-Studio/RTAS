@@ -435,6 +435,23 @@ class GitHubDataProvider:
         logger.info(f"加载了 {len(operators)} 个干员")
         return operators
 
+    @staticmethod
+    def _potential_cost_reductions(data: dict) -> list:
+        """解析潜能的部署费用减免，返回「下标=潜能等级」的累计减免列表。
+
+        游戏数据里每种潜能是一个 BUFF，其中 ``attributeType == COST`` 的条目就是减费。
+        例：巡林者有两次「部署费用-1」→ [0, -1, -1, -1, -1, -2]。
+        """
+        reductions = [0]
+        total = 0
+        for rank in data.get('potentialRanks') or []:
+            modifiers = (((rank or {}).get('buff') or {}).get('attributes') or {}).get('attributeModifiers') or []
+            for modifier in modifiers:
+                if str(modifier.get('attributeType', '')).upper() == 'COST':
+                    total += int(modifier.get('value', 0) or 0)
+            reductions.append(total)
+        return reductions
+
     def _parse_operator(self, char_id: str, data: Dict[str, Any]) -> Optional[Operator]:
         """解析干员数据"""
         try:
@@ -517,6 +534,7 @@ class GitHubDataProvider:
                 talents=talents,
                 max_potential_level=data.get('maxPotentialLevel', 5),
                 potential_item_id=data.get('potentialItemId', ''),
+                cost_reduction_by_potential=self._potential_cost_reductions(data),
                 nation_id=data.get('nationId', ''),
                 group_id=data.get('groupId'),
                 team_id=data.get('teamId'),

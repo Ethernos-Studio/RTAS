@@ -142,6 +142,55 @@ uv run rtas config --set ocr_engine paddleocr
 Umi-OCR 地址可用 `--ocr-url http://127.0.0.1:1224` 或环境变量 `RTAS_UMI_URL` 指定；
 Tesseract 可执行文件可用 `RTAS_TESSERACT_CMD` 指定。
 
+### GPU 加速（EasyOCR）
+
+PyPI 上的 `torch` 在 Windows 是 **CPU-only** 的，所以默认装完 `cuda.is_available()`
+永远是 false（日志会写「未检测到GPU，使用CPU」）。想跑显卡要装 CUDA 版：
+
+```powershell
+# 拉 PyTorch 官方 cu126 轮子（约 2.5 GB，只需一次）
+uv sync --extra gpu
+
+# 确认 torch 能看见显卡
+uv run python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+
+# 编队识别默认 auto：有 CUDA 就走 GPU
+uv run rtas squad --gpu true      # 强制 GPU（无卡会报错，便于排查）
+uv run rtas squad --gpu auto      # 默认：自动检测
+uv run rtas squad --gpu false     # 强制 CPU
+```
+
+`pyproject.toml` 里用 `[tool.uv.sources]` 把 `torch` / `torchvision` 绑到
+`pytorch-cu126` 源，且只在启用 `gpu` extra 时生效——没有显卡的环境继续用 CPU 轮子。
+
+### 数据加载范围
+
+`rtas squad` 只需要干员表，初始化时会传 `kinds=("operators",)`，
+不再把关卡 / 物品 / 敌人一起读进内存（日志里只会出现「加载了 N 个干员」）。
+`rtas data ...` 相关命令仍然加载全部四类。`rtas shell` 里连续的 `squad`
+会复用同一个分析器实例，模型、干员库与匹配索引只加载一次。
+
+### 潜能识别与部署费用
+
+编队卡面右下角（职业图标正上方）有一枚星形潜能徽章：0 潜是灰星，之后越升越亮，
+满潜是最亮的白星。`rtas squad` 会逐张读这枚徽章，再按干员库里的潜能减费表算费用：
+
+- 1 潜 **-1** 费用；满潜 **再 -1**（例如凯尔希·思衡托 E2：0 潜 19 → 1 潜 18 → 满潜 17）；
+- 具体减费按干员数据里的 `cost_reduction_by_potential` 查表，少数干员两次减费的位置不同，
+  阿米娅是 2 潜 -1、满潜 -2（E2：20 → 19 → 18）；
+- 徽章位置用**卡内比例**标定（1264×711 实测凯尔希徽章落在 `(517,530)-(543,557)`），
+  同一排的阿米娅、以及 1080p/4K 截图都会自动对齐，不需要另标坐标；
+- 读不准（卡面太亮/被挡）就报「未知」并按 `--default-potential` 兜底，绝不硬猜。
+
+```powershell
+uv run rtas squad -i squad.png                 # 逐张读徽章（读不出来按 0 潜）
+uv run rtas squad -i squad.png --default-potential 5   # 读不出来的按满潜算
+uv run rtas squad -i squad.png --potential 5           # 忽略徽章，全部按满潜算
+```
+
+`--json` 报告里每个干员都带 `potential` / `potential_source`（`badge` / `argument` /
+`default`）/ `cost_base`，方便核对。徽章图标在 `templates/icons/potential/`。
+
 ## 主界面 / 子菜单判定
 
 子菜单（终端、干员、采购中心、基建……）左上角有一个「打开顶部导航栏」按钮

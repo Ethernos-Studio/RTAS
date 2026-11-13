@@ -25,7 +25,7 @@ Version: 1.0.0
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import ClassVar, List, Dict, Any, Optional, Tuple
 from enum import Enum
 
 from .base import ArkDataModel, DataSource
@@ -258,6 +258,8 @@ class Operator(ArkDataModel):
     # 潜能
     max_potential_level: int = 5
     potential_item_id: str = ""
+    #: 各潜能等级下的累计部署费用减免（下标=潜能 0..N，值 ≤0，例如 [0,-1,-1,-1,-1,-2]）
+    cost_reduction_by_potential: List[int] = field(default_factory=list)
 
     # 其他
     nation_id: str = ""                      # 势力/国家ID
@@ -266,6 +268,18 @@ class Operator(ArkDataModel):
     display_number: str = ""                 # 编号
     is_not_obtainable: bool = False          # 是否无法获取
     is_sp_char: bool = False                 # 是否为异格干员
+
+    #: 召唤物/替身/剧情占位条目的 ID 前缀（角色表里和真干员混在一起）
+    TOKEN_ID_PREFIXES: ClassVar[Tuple[str, ...]] = ("trap_", "token_", "notchar")
+
+    @property
+    def is_token(self) -> bool:
+        """是否为召唤物/替身（不是可部署干员，匹配时只配当兜底）。"""
+        identifier = (self.id or "").casefold()
+        if identifier.startswith(self.TOKEN_ID_PREFIXES):
+            return True
+        sub_profession = (self.sub_profession_id or "").casefold()
+        return sub_profession.startswith("notchar")
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -286,6 +300,7 @@ class Operator(ArkDataModel):
             'talents': [t.to_dict() for t in self.talents],
             'max_potential_level': self.max_potential_level,
             'potential_item_id': self.potential_item_id,
+            'cost_reduction_by_potential': self.cost_reduction_by_potential,
             'nation_id': self.nation_id,
             'group_id': self.group_id,
             'team_id': self.team_id,
@@ -321,6 +336,7 @@ class Operator(ArkDataModel):
             talents=[OperatorTalent.from_dict(t) for t in data.get('talents', [])],
             max_potential_level=data.get('max_potential_level', 5),
             potential_item_id=data.get('potential_item_id', ''),
+            cost_reduction_by_potential=data.get('cost_reduction_by_potential') or [],
             nation_id=data.get('nation_id', ''),
             group_id=data.get('group_id'),
             team_id=data.get('team_id'),
@@ -351,6 +367,24 @@ class Operator(ArkDataModel):
             if phase.phase_index == phase_index:
                 return phase
         return None
+
+    def cost_at(self, elite_level: int, potential: Optional[int] = None) -> Optional[int]:
+        """指定「精英化 + 潜能」下的面板部署费用。
+
+        规则（PRTS/NGA）：面板费用 = 该精英化阶段的基础费用 + 潜能减费。
+        潜能减费一般发生在潜能 2 和 6（即 -1 两次），少数干员不同。
+        ``potential=None`` 时按满潜计算。
+        """
+        phase = self.get_phase(elite_level) or self.get_max_attributes()
+        if phase is None or phase.cost is None:
+            return None
+        if potential is None:
+            potential = self.max_potential_level
+        reduction = 0
+        if self.cost_reduction_by_potential:
+            index = max(0, min(int(potential), len(self.cost_reduction_by_potential) - 1))
+            reduction = int(self.cost_reduction_by_potential[index])
+        return int(phase.cost) + reduction
 
     def get_max_attributes(self) -> Optional[OperatorPhase]:
         """获取最高阶段的属性"""

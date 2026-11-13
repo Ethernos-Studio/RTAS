@@ -100,7 +100,6 @@ from rtas.vision.gui_matcher import (
     GUIMatcher,
     GUIMatcherConfig,
 )
-from rtas.vision.squad_analyzer import SquadAnalyzer
 from rtas.vision.squad_recognizer import SquadConfig
 
 
@@ -354,6 +353,9 @@ class DetectorCommands:
         self.config = config
         self.logger = logger
         self._detector: Optional[GameStateDetector] = None
+        # 编队分析器缓存：shell 里同一套配置只初始化一次（模型 + 干员库）
+        self._squad_analyzer: Optional[Any] = None
+        self._squad_key: Optional[Tuple[str, str, Optional[int]]] = None
 
     def _get_detector(self) -> GameStateDetector:
         """获取或创建检测器"""
@@ -379,9 +381,41 @@ class DetectorCommands:
             self._detector.shutdown()
             self._detector = None
 
+    def squad_analyzer(self, layout: str, gpu: str, potential: Optional[int] = None,
+                       default_potential: int = 0) -> Any:
+        """获取（并缓存）编队分析器；配置没变就一直复用。"""
+        key = (layout or 'selection', gpu or 'auto', potential, default_potential)
+        if self._squad_analyzer is not None and self._squad_key == key:
+            return self._squad_analyzer
+
+        from rtas.vision.squad_analyzer import SquadAnalyzer
+
+        self._release_squad_analyzer()
+        if key[0] == 'edit':
+            squad_config = SquadConfig.preset_squad_edit()
+        else:
+            squad_config = SquadConfig.preset_squad_selection()
+        squad_config.ocr_gpu = True if key[1] == 'true' else False if key[1] == 'false' else 'auto'
+
+        analyzer = SquadAnalyzer(squad_config, potential=key[2], default_potential=key[3])
+        if not analyzer.initialize():
+            raise RuntimeError("编队分析器初始化失败")
+        self._squad_analyzer = analyzer
+        self._squad_key = key
+        return analyzer
+
+    def _release_squad_analyzer(self) -> None:
+        if self._squad_analyzer is not None:
+            try:
+                self._squad_analyzer.shutdown()
+            finally:
+                self._squad_analyzer = None
+                self._squad_key = None
+
     def close(self) -> None:
-        """释放检测器（交互式会话结束时调用，与 ``_release_detector`` 等价）"""
+        """释放检测器与编队分析器（交互式会话结束时调用）"""
         self._release_detector()
+        self._release_squad_analyzer()
 
     def detect_single(
         self,
@@ -1864,7 +1898,7 @@ class DataCommands:
 # =============================================================================
 
 #: 省略 ``-i`` 时直接抓游戏窗口的命令
-SCREENSHOT_COMMANDS = frozenset({'detect', 'nav', 'ocr', 'gui', 'main-menu', 'squad'})
+SCREENSHOT_COMMANDS = frozenset({'detect', 'nav', 'ocr', 'gui', 'main-menu', 'squad', 'potential'})
 
 
 def grab_game_window(args: argparse.Namespace, logger: logging.Logger) -> Path:
@@ -1873,12 +1907,12 @@ def grab_game_window(args: argparse.Namespace, logger: logging.Logger) -> Path:
         CaptureError,
         capture_window,
         default_temp_dir,
-        find_windows,
+        find_game_windows,
         save_capture,
     )
 
     keyword = getattr(args, 'window', None)
-    windows = find_windows([keyword] if keyword else None)
+    windows = find_game_windows([keyword] if keyword else None)
     if not windows:
         hint = f"（关键字: {keyword}）" if keyword else ""
         raise CaptureError(
@@ -1886,10 +1920,10 @@ def grab_game_window(args: argparse.Namespace, logger: logging.Logger) -> Path:
             "或用 `--window 关键字` 指定。"
         )
 
-    # 多个候选时取客户区最大的那个（通常是游戏本体，其余多为启动器/工具栏）
-    window = max(windows, key=lambda item: item.client_rect.area)
+    # find_game_windows 已按可信度排序：进程像游戏 / 标题含「明日方舟」优先
+    window = windows[0]
     if len(windows) > 1:
-        logger.info(f"匹配到 {len(windows)} 个窗口，使用客户区最大的：{window.title}")
+        logger.info(f"匹配到 {len(windows)} 个候选窗口，使用：{window.title}（{window.process}）")
 
     image = capture_window(window, activate=bool(getattr(args, 'activate', False)))
     path = save_capture(image, default_temp_dir())
@@ -1951,6 +1985,8 @@ def create_parser() -> argparse.ArgumentParser:
   rtas squad -i squad.png -o result.jpg              # 编队选择界面（默认）
   rtas squad -i squad.png --layout edit -o result.jpg # 编队编辑界面
   rtas squad -i squad.png -j report.json             # 保存JSON报告
+  rtas squad -i squad.png --potential 5              # 忽略卡面徽章，全部按满潜算费用
+  rtas squad -i squad.png --default-potential 5      # 只给读不出徽章的干员按满潜算
 
   # 数据管理
   rtas data sync                    # 同步GitHub数据
@@ -2381,6 +2417,21 @@ def create_parser() -> argparse.ArgumentParser:
         help='布局类型: selection=编队选择(代理作战), edit=编队编辑 (默认: selection)'
     )
     squad_parser.add_argument(
+        '--potential',
+        type=int,
+        choices=[0, 1, 2, 3, 4, 5, 6],
+        default=None,
+        help='强制所有干员按这个潜能计算部署费用（忽略卡面潜能徽章）；'
+             '默认逐张读徽章，读不出来才用 --default-potential'
+    )
+    squad_parser.add_argument(
+        '--default-potential',
+        type=int,
+        choices=[0, 1, 2, 3, 4, 5, 6],
+        default=0,
+        help='卡面潜能徽章读不出来时按这个等级算（默认 0：没有潜能减费）'
+    )
+    squad_parser.add_argument(
         '--gpu',
         choices=['auto', 'true', 'false'],
         default='auto',
@@ -2477,6 +2528,23 @@ def create_parser() -> argparse.ArgumentParser:
     sim_tiles.add_argument('--plan-template', type=Path,
                            help='写出计划模板 JSON（填好坐标/时间即可用 -p 运行）')
     sim_tiles.add_argument('--enemy-db', type=Path, help='敌人数据库路径')
+
+    # potential 命令（干员详情页的潜能识别）
+    potential_parser = subparsers.add_parser(
+        'potential',
+        help='识别干员详情页的潜能（部署费用会随潜能减少）'
+    )
+    potential_parser.add_argument(
+        '-i', '--image',
+        type=Path,
+        help='干员详情页截图（省略则直接抓游戏窗口）'
+    )
+    add_screenshot_options(potential_parser)
+    potential_parser.add_argument(
+        '--json',
+        action='store_true',
+        help='以 JSON 输出'
+    )
 
     # text 命令（文字定位）
     text_parser = subparsers.add_parser(
@@ -3177,55 +3245,51 @@ def dispatch(
             return 0 if success else 1
 
         elif args.command == 'squad':
-            # 根据布局类型选择配置
-            if args.layout == 'edit':
-                config = SquadConfig.preset_squad_edit()
+            # 复用缓存的编队分析器：shell 里模型与干员库只加载一次
+            analyzer = commands.squad_analyzer(
+                args.layout, args.gpu, args.potential, args.default_potential
+            )
+
+            print(f"\n分析编队截图: {args.image}")
+            print("="*70)
+
+            # 分析编队
+            result = analyzer.analyze(args.image)
+
+            # 打印报告
+            analyzer.print_report(result)
+
+            # 打印待部署区列表
+            analyzer.print_deploy_list(result)
+
+            # 保存可视化
+            if args.output:
+                analyzer.visualize(args.image, result, args.output)
+                print(f"\n可视化结果已保存: {args.output}")
+
+            # 保存JSON
+            if args.json:
+                with open(args.json, 'w', encoding='utf-8') as f:
+                    json.dump(result.to_dict(), f, ensure_ascii=False, indent=2)
+                print(f"JSON报告已保存: {args.json}")
+
+            return 0
+
+        elif args.command == 'potential':
+            from rtas.vision.potential_reader import read_potential
+
+            info = read_potential(args.image)
+            if args.json:
+                print(json.dumps(info.to_dict(), ensure_ascii=False, indent=2))
             else:
-                config = SquadConfig.preset_squad_selection()
-
-            # 设置GPU配置
-            gpu_config = args.gpu
-            if gpu_config == 'true':
-                config.ocr_gpu = True
-            elif gpu_config == 'false':
-                config.ocr_gpu = False
-            else:
-                config.ocr_gpu = 'auto'
-
-            # 创建分析器
-            analyzer = SquadAnalyzer(config)
-
-            if not analyzer.initialize():
-                print("初始化失败")
-                return 1
-
-            try:
-                print(f"\n分析编队截图: {args.image}")
-                print("="*70)
-
-                # 分析编队
-                result = analyzer.analyze(args.image)
-
-                # 打印报告
-                analyzer.print_report(result)
-
-                # 打印待部署区列表
-                analyzer.print_deploy_list(result)
-
-                # 保存可视化
-                if args.output:
-                    analyzer.visualize(args.image, result, args.output)
-                    print(f"\n可视化结果已保存: {args.output}")
-
-                # 保存JSON
-                if args.json:
-                    with open(args.json, 'w', encoding='utf-8') as f:
-                        json.dump(result.to_dict(), f, ensure_ascii=False, indent=2)
-                    print(f"JSON报告已保存: {args.json}")
-
-            finally:
-                analyzer.shutdown()
-
+                print(f"文件: {args.image}")
+                potential = '未识别' if info.potential is None else str(info.potential)
+                suffix = '（MAX）' if info.max_potential else ''
+                print(f"潜能: {potential}{suffix}    徽章原文: {info.raw_text or '-'}")
+                print(f"精英化: {info.elite_text or '未识别'}")
+                if info.potential is not None:
+                    print(f"提示: `rtas squad --potential {info.potential}` 可强制按该潜能计算部署费用；"
+                          f"`rtas squad` 默认逐张读卡面徽章")
             return 0
 
         elif args.command == 'level':
@@ -3496,6 +3560,7 @@ def dispatch(
         # 只释放本次创建的检测器；shell 会复用同一个实例
         if owns_commands:
             commands._release_detector()
+            commands._release_squad_analyzer()
 
     return 0
 

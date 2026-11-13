@@ -26,7 +26,9 @@
 - 名称：底部名称条放大 6 倍、多套预处理各跑一次 OCR，保留多个候选，
   交给 ``rtas.data.operator_matcher`` 用干员库做模糊校正；
 - 等级：等级圆圈内数字，放大 + 二值化后用纯数字白名单识别；
-- 精英化：模板匹配（模板缺失时按 E0 处理，不阻塞其它字段）。
+- 精英化：模板匹配（模板缺失时按 E0 处理，不阻塞其它字段）；
+- 潜能：卡面右下的星形徽章（0 潜是灰星，越升越亮，满潜是最亮的白星），
+  与 ``templates/icons/potential`` 里的 0~5 潜图标做掩码相关，读不出就是 ``None``。
 
 Author: RTAS Vision Team
 Version: 2.0.0
@@ -53,6 +55,8 @@ logger = logging.getLogger(__name__)
 
 #: 精英化图标模板缓存（解包的 40x30 / 40x38 渲染图，只保留实体像素掩码）
 _ELITE_TEMPLATE_CACHE: Dict[int, np.ndarray] = {}
+#: 潜能徽章模板缓存：{潜能等级: (BGR 浮点图, 实体像素掩码)}
+_POTENTIAL_TEMPLATE_CACHE: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
 
 
 class EliteLevel(Enum):
@@ -74,6 +78,9 @@ class OperatorCard:
     level: int = 1
     name: str = ""
     name_confidence: float = 0.0
+    #: 卡面徽章读到的潜能等级（0~5，满潜通常是 5）；``None`` 表示徽章没读出来
+    potential: Optional[int] = None
+    potential_confidence: float = 0.0
 
     # 名称候选（按置信度降序），供数据库模糊校正使用
     name_candidates: List[Tuple[str, float]] = field(default_factory=list)
@@ -88,7 +95,8 @@ class OperatorCard:
 
     def __str__(self) -> str:
         elite_str = f"E{self.elite_level.value}" if self.elite_level.value > 0 else "E0"
-        return f"{self.name} [{elite_str} Lv.{self.level}]"
+        potential_str = f" 潜{self.potential}" if self.potential is not None else ""
+        return f"{self.name} [{elite_str} Lv.{self.level}{potential_str}]"
 
 
 @dataclass
@@ -123,6 +131,18 @@ class SquadConfig:
         2: Path("templates/icons/elitism/level_2_render.png"),
     })
 
+    # -- 潜能徽章 ------------------------------------------------------
+    #: 徽章框（相对卡片：左、上、右、下）。实测 1264x711 下凯尔希·思衡托的徽章
+    #: 落在 (517,530)-(543,557)，同一排的阿米娅按同一比例自动对齐，无需额外标点。
+    potential_region_ratio: Tuple[float, float, float, float] = (0.752, 0.685, 0.982, 0.794)
+    #: 0~5 潜的徽章图标：0 是灰星（还没升潜能），越往上越亮，5 是满潜的白星
+    potential_templates: Dict[int, Path] = field(default_factory=lambda: {
+        level: Path(f"templates/icons/potential/potential_{level}_small.png")
+        for level in range(6)
+    })
+    #: 关掉后就不读徽章（只想要名称/等级，或截图上根本没有这枚徽章时）
+    recognize_potential: bool = True
+
     # -- OCR -----------------------------------------------------------
     ocr_languages: List[str] = field(default_factory=lambda: ['ch_sim', 'en'])
     ocr_gpu: Union[bool, str] = 'auto'
@@ -149,6 +169,10 @@ class SquadRecognizer:
         self.config = config or SquadConfig()
         self._ocr_reader = None
         self._initialized = False
+        #: 缩放好的潜能模板（懒加载）
+        self._potential_scaled: Optional[
+            Dict[Tuple[int, float], Tuple[np.ndarray, np.ndarray]]
+        ] = None
 
     # -- 初始化 -----------------------------------------------------------
     def _check_gpu_available(self) -> bool:
@@ -266,6 +290,8 @@ class SquadRecognizer:
             if any(keyword in card.name for keyword in ("助战", "开始行动", "代理")):
                 logger.debug(f"位置{grid}是「{card.name}」，不是干员卡片，跳过")
                 continue
+            if self.config.recognize_potential:
+                card.potential, card.potential_confidence = self._recognize_potential(card_image)
             cards.append(card)
             suffix = (f" (候选: {', '.join(n for n, _ in card.name_candidates[:3])})"
                       if len(card.name_candidates) > 1 else "")
@@ -465,13 +491,13 @@ class SquadRecognizer:
     # -- 精英化 -----------------------------------------------------------
     #: 徽章搜索区域（相对卡片：左、上、宽、高）。实测徽章 x≈0.09~0.12、
     #: y≈0.59~0.65、宽≈0.195 卡宽，这里留余量给不同分辨率与界面缩放。
-    ELITE_BAND = (0.02, 0.54, 0.45, 0.24)
+    ELITE_BAND = (0.02, 0.55, 0.44, 0.25)
     #: 模板宽 40px 对应 113px 宽卡片时的缩放（实测 0.73），按卡宽等比换算
     ELITE_SCALE_BASE = 0.73
     ELITE_SCALE_SPAN = 0.08
-    ELITE_MIN_WHITENESS = 0.25   # 徽章区域白色占比下限：低于此值说明压根没徽章
-    ELITE_MIN_DARK = 0.35        # 暗像素占比下限：整片白立绘会被挡掉
-    ELITE_E2_RATIO = 0.35        # 第二层白度 / 第一层白度，超过即 E2
+    ELITE_BLOB_AREA = 120        # X 白块的面积下限（太小说明没有徽章）
+    ELITE_BLOB_CONVEXITY = 0.37  # 白块的 面积/凸包面积：交叉双刀极瘦，白立绘接近实心
+    ELITE_E2_NCC = 0.22          # 第二层与模板刀形的相关性，超过即 E2
 
     def elite_templates(self) -> Dict[int, np.ndarray]:
         """加载解包的精英化图标，取实体像素的二值掩码（进程内缓存）。"""
@@ -522,6 +548,47 @@ class SquadRecognizer:
             return None
         return best[1], best[2]
 
+    @staticmethod
+    def _ncc(patch: np.ndarray, template: np.ndarray) -> float:
+        """归一化互相关：两块图「长得像不像」，对整体亮度不敏感。"""
+        if patch.shape != template.shape or patch.size == 0:
+            return 0.0
+        a = patch.astype(np.float32) - float(patch.mean())
+        b = template.astype(np.float32) - float(template.mean())
+        scale = float(np.linalg.norm(a) * np.linalg.norm(b))
+        if scale <= 1e-6:
+            return 0.0
+        return float((a * b).sum() / scale)
+
+    def _badge_blob(self, card_image: np.ndarray) -> Optional[Tuple[float, float]]:
+        """在徽章带里找最白的连通块，返回 (面积, 面积/凸包面积)。
+
+        交叉双刀是两条细刀交叉，凸包很大而实体很小（实测 0.16~0.33）；
+        卡面亮部是实心块（0.42~0.86），靠这个比值就能分清「有没有徽章」。
+        """
+        hsv = cv2.cvtColor(card_image, cv2.COLOR_BGR2HSV)
+        value, saturation = hsv[:, :, 2], hsv[:, :, 1]
+        height, width = card_image.shape[:2]
+        top = int(height * self.ELITE_BAND[1])
+        bottom = int(height * (self.ELITE_BAND[1] + self.ELITE_BAND[3]))
+        right = int(width * (self.ELITE_BAND[0] + self.ELITE_BAND[2]))
+        mask = ((value[top:bottom, :right] > 235) & (saturation[top:bottom, :right] < 30))
+        mask = mask.astype(np.uint8)
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+        if count <= 1:
+            return None
+
+        index = 1 + int(np.argmax([stats[i, cv2.CC_STAT_AREA] for i in range(1, count)]))
+        area = int(stats[index, cv2.CC_STAT_AREA])
+        component = (labels == index).astype(np.uint8)
+        contours, _ = cv2.findContours(component, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+        contour = max(contours, key=cv2.contourArea)
+        hull_area = float(cv2.contourArea(cv2.convexHull(contour)))
+        convexity = float(cv2.contourArea(contour)) / max(hull_area, 1.0)
+        return float(area), convexity
+
     def _recognize_elite_level(self, card_image: np.ndarray) -> EliteLevel:
         """按解包的精英化图标判断 E0 / E1 / E2。
 
@@ -548,9 +615,15 @@ class SquadRecognizer:
         if roi.size == 0:
             return EliteLevel.E0
 
+        blob = self._badge_blob(card_image)
+        if blob is None or blob[0] < self.ELITE_BLOB_AREA:
+            return EliteLevel.E0                      # 没有白块：没有徽章
+        if blob[1] >= self.ELITE_BLOB_CONVEXITY:
+            return EliteLevel.E0                      # 白块太实心：是卡面亮部，不是交叉双刀
+
         located = self._locate_badge(roi, templates, card_width)
         if located is None:
-            return EliteLevel.E0
+            return EliteLevel.E1
         scale, (offset_x, offset_y) = located
 
         width = int(round(templates[1].shape[1] * scale))
@@ -562,13 +635,182 @@ class SquadRecognizer:
         if upper.size == 0 or below.size == 0:
             return EliteLevel.E0
 
-        brightness = float(upper.mean())
-        dark = float((upper < 0.15).mean())
-        if brightness < self.ELITE_MIN_WHITENESS or dark < self.ELITE_MIN_DARK:
-            return EliteLevel.E0  # 没有徽章，或是一整片白立绘而非交叉双刀
-        if float(below.mean()) / max(brightness, 1e-3) >= self.ELITE_E2_RATIO:
+        # 第二层判定用「形状相关性」而不是亮度：卡面本身很白时（巡林者、凛冬）
+        # 只看下方有多亮会被骗，看它像不像那层刀才靠谱。
+        second_layer = cv2.resize(templates[2], (width, double),
+                                  interpolation=cv2.INTER_AREA)[single:double]
+        if self._ncc(below, second_layer) >= self.ELITE_E2_NCC:
             return EliteLevel.E2
         return EliteLevel.E1
+
+    # -- 潜能 -------------------------------------------------------------
+    #: 113px 宽卡片上徽章约是模板的 0.75 倍；换分辨率按卡宽等比换算
+    POTENTIAL_SCALE_BASE = 0.75
+    #: 缩放搜索余量（相对），覆盖截图缩放与 DPI 差异
+    POTENTIAL_SCALE_SPAN = 0.12
+    #: 缩放取几档（奇数，中间那档就是理论值）
+    POTENTIAL_SCALE_STEPS = 5
+    #: 徽章框四周再放宽的比例：截图的网格不会跟标点时严丝合缝，留一点余量
+    POTENTIAL_PAD = 0.08
+    #: 围绕徽章框中心再滑动的像素数（按 113px 卡宽计，其它分辨率等比换算）
+    POTENTIAL_SLIDE = 8
+    #: 与模板的相关系数下限：低于它基本就是卡面花纹
+    POTENTIAL_MIN_SCORE = 0.78
+    #: 与第二名的差距：徽章之间有渐变，差得太少说明没把握，宁可报「未知」
+    POTENTIAL_MIN_GAP = 0.08
+
+    def potential_templates(self) -> Dict[int, Tuple[np.ndarray, np.ndarray]]:
+        """加载 0~5 潜的徽章图标，返回 ``{等级: (BGR 浮点图, 实体像素掩码)}``。"""
+        if _POTENTIAL_TEMPLATE_CACHE:
+            return _POTENTIAL_TEMPLATE_CACHE
+        for level, relative in self.config.potential_templates.items():
+            path = Path(relative)
+            image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED) if path.exists() else None
+            if image is None or image.ndim != 3 or image.shape[2] != 4:
+                logger.warning(f"潜能模板不可用: {path}")
+                continue
+            alpha = image[:, :, 3]
+            rows, cols = np.nonzero(alpha > 110)
+            if cols.size == 0:
+                continue
+            # 去掉四周透明边，只留徽章本体：后面按比例缩放才对得齐
+            top, bottom = int(rows.min()), int(rows.max()) + 1
+            left, right = int(cols.min()), int(cols.max()) + 1
+            _POTENTIAL_TEMPLATE_CACHE[int(level)] = (
+                image[top:bottom, left:right, :3].astype(np.float32),
+                alpha[top:bottom, left:right] > 110,
+            )
+        return _POTENTIAL_TEMPLATE_CACHE
+
+    def potential_scales(self, card_width: int) -> List[float]:
+        """按卡宽算出要试的几个缩放（1264x711 实测 0.75 最准）。"""
+        base = self.POTENTIAL_SCALE_BASE * card_width / 113.0
+        half = max(1, (self.POTENTIAL_SCALE_STEPS - 1) // 2)
+        step = self.POTENTIAL_SCALE_SPAN / half
+        return [base * (1.0 + index * step) for index in range(-half, half + 1)]
+
+    def _scaled_potential_templates(
+        self, card_width: int
+    ) -> List[Tuple[int, np.ndarray, np.ndarray]]:
+        """把模板缩到当前卡宽对应的尺寸，返回 ``[(等级, 模板, 掩码), ...]``。
+
+        缩放结果按 ``(等级, 缩放)`` 缓存，同一个识别器处理多张图时不重复缩放；
+        但每次只回当前卡宽该用的那几档，免得拿别的分辨率的缩放去硬凑。
+        """
+        if self._potential_scaled is None:
+            self._potential_scaled = {}
+        cache = self._potential_scaled
+        items: List[Tuple[int, np.ndarray, np.ndarray]] = []
+        for level, (glyph, mask) in self.potential_templates().items():
+            for scale in self.potential_scales(card_width):
+                key = (level, round(scale, 3))
+                if key not in cache:
+                    height = int(round(glyph.shape[0] * scale))
+                    width = int(round(glyph.shape[1] * scale))
+                    if height < 8 or width < 8:
+                        continue
+                    cache[key] = (
+                        cv2.resize(glyph, (width, height), interpolation=cv2.INTER_AREA),
+                        cv2.resize(mask.astype(np.uint8), (width, height),
+                                   interpolation=cv2.INTER_NEAREST).astype(np.float32),
+                    )
+                template, mask_image = cache[key]
+                items.append((level, template, mask_image))
+        return items
+
+    @staticmethod
+    def _correlate(image: np.ndarray, kernel: np.ndarray) -> np.ndarray:
+        """掩码相关：每个位置上的 ``sum(kernel * image)``，核中心就是该位置。"""
+        k_h, k_w = kernel.shape[:2]
+        return cv2.filter2D(image, -1, kernel, anchor=(k_w // 2, k_h // 2),
+                            borderType=cv2.BORDER_CONSTANT)
+
+    @classmethod
+    def _masked_ncc_map(cls, roi: np.ndarray, template: np.ndarray,
+                        mask: np.ndarray) -> Optional[np.ndarray]:
+        """整张 ROI 上每个位置的「掩码零均值归一化相关」（一次卷积算完）。
+
+        只统计徽章实体像素，所以卡面背景再亮也抬不高分数。
+        """
+        count = float(mask.sum())
+        if count < 20:
+            return None
+        mask_3d = mask[..., None]
+        template_mean = (template * mask_3d).sum(axis=(0, 1)) / count
+        centred = (template - template_mean) * mask_3d
+        template_norm = float(np.sqrt(float((centred ** 2).sum())))
+        if template_norm <= 1e-6:
+            return None
+
+        local_sum = cls._correlate(roi, mask)                        # 掩码内每通道和
+        local_sq = cls._correlate(roi ** 2, mask)                    # 掩码内每通道平方和
+        cross = np.zeros(roi.shape[:2], dtype=np.float32)            # Σ mask·(T-meanT)·I
+        for channel in range(roi.shape[2]):
+            cross += cls._correlate(roi[:, :, channel], centred[:, :, channel])
+
+        local_mean = local_sum / count
+        image_variance = np.clip((local_sq - count * local_mean ** 2).sum(axis=2), 0.0, None)
+        denominator = template_norm * np.sqrt(image_variance)
+        response = np.where(denominator > 1e-6, cross / np.maximum(denominator, 1e-6), 0.0)
+        return response.astype(np.float32)
+
+    def potential_scores(self, card_image: np.ndarray) -> Dict[int, float]:
+        """卡面徽章对 0~5 潜模板的相关系数（越大越像；无模板时返回空）。"""
+        if card_image.size == 0:
+            return {}
+
+        height, width = card_image.shape[:2]
+        templates = self._scaled_potential_templates(width)
+        if not templates:
+            return {}
+
+        left_ratio, top_ratio, right_ratio, bottom_ratio = self.config.potential_region_ratio
+        pad = self.POTENTIAL_PAD
+        left = max(0, int(round((left_ratio - pad) * width)))
+        top = max(0, int(round((top_ratio - pad) * height)))
+        right = min(width, int(round((right_ratio + pad) * width)))
+        bottom = min(height, int(round((bottom_ratio + pad) * height)))
+        roi = card_image[top:bottom, left:right].astype(np.float32)
+        if roi.size == 0:
+            return {}
+
+        best: Dict[int, float] = {}
+        # 徽章框中心（换算到 ROI 坐标系）：贴图右侧会顶到卡边被裁掉，
+        # 所以不能拿 ROI 的中心当基准，得用**未放宽的徽章框**中心。
+        centre_x = int(round((left_ratio + right_ratio) / 2 * width)) - left
+        centre_y = int(round((top_ratio + bottom_ratio) / 2 * height)) - top
+        # 只在中心附近几像素内取分数，别拿整张卡面去撞模板
+        slide = max(2, int(round(self.POTENTIAL_SLIDE * width / 113.0)))
+        for level, template, mask in templates:
+            template_h, template_w = template.shape[:2]
+            if template_h >= roi.shape[0] or template_w >= roi.shape[1]:
+                continue
+            response = self._masked_ncc_map(roi, template, mask)
+            if response is None:
+                continue
+            x0 = max(0, centre_x - slide)
+            x1 = min(response.shape[1], centre_x + slide + 1)
+            y0 = max(0, centre_y - slide)
+            y1 = min(response.shape[0], centre_y + slide + 1)
+            window = response[y0:y1, x0:x1]
+            if window.size == 0:
+                continue
+            score = float(window.max())
+            if score > best.get(level, -1.0):
+                best[level] = score
+        return best
+
+    def _recognize_potential(self, card_image: np.ndarray) -> Tuple[Optional[int], float]:
+        """读卡面右下的潜能徽章：读得准才返回等级，没把握返回 ``(None, 分数)``。"""
+        scores = self.potential_scores(card_image)
+        if not scores:
+            return None, 0.0
+        ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        level, score = ranked[0]
+        runner_up = ranked[1][1] if len(ranked) > 1 else 0.0
+        if score < self.POTENTIAL_MIN_SCORE or score - runner_up < self.POTENTIAL_MIN_GAP:
+            return None, max(score, 0.0)
+        return int(level), float(score)
 
     # -- 可视化（保留原实现，改为用卡片的实际框）---------------------------
     def visualize_result(
@@ -601,6 +843,8 @@ class SquadRecognizer:
 
             elite_str = f"E{card.elite_level.value}"
             lines = [f"{card.name}", f"[{elite_str} Lv.{card.level}]"]
+            if card.potential is not None:
+                lines.append(f"潜能 {card.potential}")
             if card.operator_info:
                 stars = card.operator_info.get('rarity', 0)
                 lines.append('★' * stars if stars else '')

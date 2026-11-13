@@ -99,21 +99,23 @@ class OperatorMatcher:
         try:
             logger.info("初始化干员匹配器...")
 
-            # 获取所有干员
+            # 获取所有干员（剔除 token_/trap_ 这类召唤物与占位条目）
             if self._data_manager:
-                self._operators = self._data_manager.get_operators()
+                self._operators = [op for op in self._data_manager.get_operators()
+                                   if not op.is_token]
             else:
                 # 创建新的数据管理器
                 self._data_manager = DataManager()
-                if not self._data_manager.initialize():
+                if not self._data_manager.initialize(kinds=("operators",)):
                     logger.error("数据管理器初始化失败")
                     return False
-                self._operators = self._data_manager.get_operators()
+                self._operators = [op for op in self._data_manager.get_operators()
+                                   if not op.is_token]
 
             # 构建名称索引
             self._build_name_index()
 
-            logger.info(f"干员匹配器初始化完成，共加载 {len(self._operators)} 个干员")
+            logger.info(f"干员匹配器初始化完成，可用干员 {len(self._operators)} 个")
             return True
 
         except Exception as e:
@@ -121,29 +123,24 @@ class OperatorMatcher:
             return False
 
     def _build_name_index(self) -> None:
-        """构建名称索引"""
+        """构建名称索引（召唤物/占位条目已在加载时剔除）。"""
         self._name_index = {}
         self._alias_index = {}
 
         for op in self._operators:
-            # 主名称
             if op.name:
-                self._name_index[op.name] = op
-                # 添加简体/繁体变体
+                self._name_index.setdefault(op.name, op)
                 simplified = self._to_simplified(op.name)
                 if simplified != op.name:
-                    self._name_index[simplified] = op
+                    self._name_index.setdefault(simplified, op)
 
-            # 英文名/代号
             if op.appellation:
-                self._name_index[op.appellation] = op
+                self._name_index.setdefault(op.appellation, op)
 
-            # 处理异格干员（名称通常包含前缀）
             if op.is_sp_char and op.name:
-                # 尝试提取基础名称
                 base_name = self._extract_base_name(op.name)
                 if base_name and base_name != op.name:
-                    self._alias_index[base_name] = op.name
+                    self._alias_index.setdefault(base_name, op.name)
 
     def _to_simplified(self, text: str) -> str:
         """
@@ -373,7 +370,8 @@ class OperatorMatcher:
         elite_level: int = 0,
         level: int = 1,
         confidence: float = 0.0,
-        confidence_threshold: float = 0.7
+        confidence_threshold: float = 0.7,
+        potential: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         获取干员详细信息
@@ -402,6 +400,10 @@ class OperatorMatcher:
             'sub_profession': None,
             'position': None,
             'cost': None,
+            'cost_base': None,
+            'potential': None,
+            'max_potential': None,
+            'cost_reduction_by_potential': [],
             'phase_info': None,
             'alternatives': []
         }
@@ -427,7 +429,12 @@ class OperatorMatcher:
             # 获取当前精英化阶段的属性
             phase = op.get_phase(elite_level)
             if phase:
-                result['cost'] = phase.cost
+                # 面板部署费用 = 该阶段基础费用 + 潜能减费（默认按满潜，和游戏里看到的一致）
+                result['cost_base'] = phase.cost
+                result['cost_reduction_by_potential'] = op.cost_reduction_by_potential
+                result['max_potential'] = op.max_potential_level
+                result['potential'] = potential if potential is not None else op.max_potential_level
+                result['cost'] = op.cost_at(elite_level, potential) or phase.cost
                 result['phase_info'] = {
                     'max_hp': phase.max_hp,
                     'atk': phase.atk,

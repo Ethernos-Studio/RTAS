@@ -92,40 +92,69 @@ SCREENSHOTS = {
 }
 
 
-def _badge_card(bright_upper: bool, bright_below: bool) -> np.ndarray:
-    """造一张 113x248 的卡：徽章带里画「明暗相间」的上半 + 可选亮的下半。
+def _blank_card() -> np.ndarray:
+    return np.full((248, 113, 3), 40, dtype=np.uint8)
 
-    locate 被固定成 (scale=0.73, 偏移 0)，所以窗口位置可以精确推算：
-    带原点 (2,134)，窗口宽 29，上半 22 行、下半 6 行。
-    """
-    card = np.full((248, 113, 3), 40, dtype=np.uint8)
-    left, top, width = 2, 134, 29
-    if bright_upper:
-        chess = np.indices((22, width)).sum(axis=0) % 2 == 0   # 一半白一半黑，像交叉双刀
-        card[top:top + 22, left:left + width][chess] = 255
-    if bright_below:
-        card[top + 22:top + 28, left:left + width] = 255
+
+def _solid_art_card() -> np.ndarray:
+    """卡面亮部：一整块实心白，凸包占比接近 1。"""
+    card = _blank_card()
+    card[150:185, 8:45] = 255
     return card
 
 
-@pytest.fixture
-def fixed_locator(monkeypatch):
+def _crossed_blades(second_layer: bool = False) -> np.ndarray:
+    """画一个「交叉双刀」：两条细白线交叉，可选再叠一层（E2 是错位重叠）。"""
+    card = _blank_card()
+    dy = 27
+    cv2.line(card, (10, 146), (44, 146 + dy), (255, 255, 255), 2)
+    cv2.line(card, (44, 146), (10, 146 + dy), (255, 255, 255), 2)
+    if second_layer:
+        cv2.line(card, (10, 154), (44, 154 + dy), (255, 255, 255), 2)
+        cv2.line(card, (44, 154), (10, 154 + dy), (255, 255, 255), 2)
+    return card
+
+
+def test_badge_blob_separates_blades_from_bright_art():
+    """交叉双刀「瘦」（凸包占比低），卡面亮部「实心」（接近 1）。"""
     recognizer = SquadRecognizer(SquadConfig())
-    monkeypatch.setattr(
-        recognizer, "_locate_badge",
-        lambda roi, templates, card_width: (0.73, (0, 0)))
-    return recognizer
+
+    assert recognizer._badge_blob(_blank_card()) is None
+
+    _, solid = recognizer._badge_blob(_solid_art_card())
+    assert solid >= recognizer.ELITE_BLOB_CONVEXITY
+
+    area, convexity = recognizer._badge_blob(_crossed_blades())
+    assert area >= recognizer.ELITE_BLOB_AREA
+    assert convexity < recognizer.ELITE_BLOB_CONVEXITY
 
 
-def test_elite_decision_branches(fixed_locator):
-    """没有徽章 / 只有一层 / 多一层，以及纯白卡面不算徽章。"""
-    recognizer = fixed_locator
-    assert recognizer._recognize_elite_level(_badge_card(False, False)) is EliteLevel.E0
-    assert recognizer._recognize_elite_level(_badge_card(True, False)) is EliteLevel.E1
-    assert recognizer._recognize_elite_level(_badge_card(True, True)) is EliteLevel.E2
+def test_second_layer_makes_the_blob_bigger():
+    """E2 多一层刀：面积更大、凸包更高，但依然是「瘦」的。"""
+    recognizer = SquadRecognizer(SquadConfig())
+    single_area, single_convexity = recognizer._badge_blob(_crossed_blades())
+    double_area, double_convexity = recognizer._badge_blob(_crossed_blades(second_layer=True))
 
-    blank = np.full((248, 113, 3), 235, dtype=np.uint8)   # 阿消/罗德岛那种白立绘
-    assert recognizer._recognize_elite_level(blank) is EliteLevel.E0
+    assert double_area > single_area
+    assert double_convexity < recognizer.ELITE_BLOB_CONVEXITY
+
+
+def test_recognize_elite_returns_e0_without_blades():
+    """没有刀（空卡 / 实心白立绘）一律 E0。"""
+    recognizer = SquadRecognizer(SquadConfig())
+    assert recognizer._recognize_elite_level(_blank_card()) is EliteLevel.E0
+    assert recognizer._recognize_elite_level(_solid_art_card()) is EliteLevel.E0
+
+
+def test_ncc_shape_similarity():
+    """形状相关性：相同为 1，反相为 -1，常量块无法比较记 0。"""
+    recognizer = SquadRecognizer(SquadConfig())
+    a = np.zeros((10, 10), dtype=np.float32)
+    a[2:8, 2:8] = 1.0
+
+    assert recognizer._ncc(a, a) == pytest.approx(1.0)
+    assert recognizer._ncc(a, 1.0 - a) == pytest.approx(-1.0)
+    assert recognizer._ncc(a, np.full((10, 10), 0.5, dtype=np.float32)) == 0.0
 
 
 def test_elite_templates_come_from_packed_icons():
