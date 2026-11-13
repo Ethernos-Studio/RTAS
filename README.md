@@ -12,6 +12,7 @@
 | CLI | `src/rtas/cli.py` | 统一命令行入口：检测、监控、GUI 匹配、编队识别、数据管理 |
 | 数据层 | `src/rtas/data/` | GitHub 数据源、PRTS Wiki、SQLite 结构化数据库、领域模型 |
 | 地图分析 | `src/rtas/map/` | 关卡解析、敌人路径、波次分析、地图可视化 |
+| 关卡推演 | `src/rtas/sim/` | 敌人走位/阻挡/输出推演、位置图与推演视频 |
 | 视觉分析 | `src/rtas/vision/` | 游戏状态检测、GUI 元素匹配、编队与干员识别、文本定位 |
 | OCR 后端 | `src/rtas/vision/ocr/` | EasyOCR / PaddleOCR / Umi-OCR / Tesseract 统一接口 |
 | 导航判定 | `src/rtas/vision/nav_detector.py` | 主界面/子菜单判定、顶部导航栏按钮坐标 |
@@ -71,6 +72,9 @@ uv run rtas nav -i screenshot.png
 # 查看/试用 OCR 引擎
 uv run rtas ocr --list
 uv run rtas ocr -i screenshot.png --engine paddleocr
+
+# 关卡推演（详见「关卡推演（sim）」章节）
+uv run rtas sim map -l ArknightsGameData/zh_CN/gamedata/levels/obt/main/level_main_01-07.json -t 30 -o t30.png
 ```
 
 也可以通过模块方式运行：
@@ -235,6 +239,87 @@ quiet 模式适合被其它程序（UI、脚本）当作 stdio 服务调用，�
 转发的 CLI 命令把标准输出放在 `output`、退出码放在 `exit_code`；失败时额外给出
 `{"ok": false, "error": "..."}`（`error` 取自 stderr 或日志里的告警/错误）。
 
+## 关卡推演（sim）
+
+`rtas sim` 直接读关卡数据做「走位 → 阻挡 → 输出」推演，不需要游戏在运行：
+
+| 子命令 | 作用 |
+| --- | --- |
+| `sim map` | 某个时刻场上敌人都在哪（不模拟阻挡），输出图片或 JSON |
+| `sim run` | 完整推演（可部署干员），导出视频 + 数据 |
+| `sim tiles` | 列出可部署地块，生成计划模板 |
+
+支持两种关卡格式：
+
+- **RTAS 简化格式**：`tiles` / `routes` / `waves`（`rtas level` 用的那种），敌人属性写在 `enemies` 里；
+- **明日方舟原版关卡**：`ArknightsGameData/zh_CN/gamedata/levels/**.json`，
+  会自动读取同级的 `enemydata/enemy_database.json` 拿到血量 / 防御 / 移速 / 阻挡权重，
+  路线缺少 `checkpoints` 时用 A* 在可通行地块上补全，门格不是 `tile_start` / `tile_end`
+  时按路线端点补成红门 / 蓝门。
+
+```powershell
+# 关卡路径
+$LV = "ArknightsGameData/zh_CN/gamedata/levels/obt/main/level_main_01-07.json"
+
+# 1) 第 30 秒的敌人位置图（无阻挡），也可以 -t 30,45,60 一次出多张
+uv run rtas sim map -l $LV -t 30 -o t30.png
+
+# 2) 红门 → 蓝门的无阻挡走位视频
+uv run rtas sim run -l $LV -t 60 -o noblock.mp4 --fps 20
+
+# 3) 5 秒放一个阻挡 1 的近卫（600 伤害 / 1 秒，只打自己挡住的敌人）
+uv run rtas sim run -l $LV -o run.mp4 --json run.json `
+  --op "name=近卫,t=5,tile=3:2,block=1,damage=600,interval=1.0,mode=melee"
+
+# 4) 不知道能放哪：先列地块、生成计划模板，改完直接跑
+uv run rtas sim tiles -l $LV --plan-template plan.json
+uv run rtas sim run -l $LV -p plan.json -o run.mp4
+```
+
+`--op` 支持的字段：`name`、`t`（部署时刻）、`tile=行:列`、`block`、`damage`、
+`interval`（攻击间隔）、`mode=melee|ranged`、`range`（远程射程，格）、`retreat`（撤退时刻）。
+
+推演规则（简化、可解释）：
+
+- 敌人按 `waves` 计算出的绝对时间在红门生成，按「格 / 秒」沿路线移动，
+  原版关卡的速度会乘以关卡的 `moveMultiplier`；
+- 地面敌人走到干员所在格时，若干员还有阻挡余量（`block` ≥ 已占权重 + 该敌人 `weight`）就被挡住，
+  飞行敌人无视阻挡；
+- 干员按 `attack_interval` 出手：`melee` 只打自己阻挡的敌人，`ranged` 打射程内最靠前的敌人；
+  伤害先扣防御，最低保底 5%；
+- 血量归零 = 击杀（干员记击杀数 / 总伤害），走到蓝门 = 漏怪并扣生命值。
+
+输出物：`.mp4` 视频（OpenCV `mp4v`）、`.gif`（PIL）、`.json`（含逐帧 `frames` 与 `events`，
+可用 `--no-frames` 只留汇总）。视频顶部 HUD 实时显示时间、生命、击杀、漏怪与阻挡数。
+
+### 作为库调用
+
+```python
+from rtas.sim import OperatorSpec, Plan, Simulator, load_level
+
+level = load_level("ArknightsGameData/zh_CN/gamedata/levels/obt/main/level_main_01-07.json")
+
+# 只看走位：某一时刻的敌人位置 / 数据
+result = Simulator(level).run(duration=90)
+result.save_snapshot("t30.png", time=30)
+for enemy in result.frame_at(30).enemies:
+    print(enemy.name, round(enemy.row, 2), round(enemy.col, 2), enemy.hp)
+
+# 放一个阻挡 1 的近卫，看击杀/漏怪并导出视频
+plan = Plan(duration=120, fps=20)
+plan.add(OperatorSpec(name="近卫", tile=(3, 2), deploy_time=5, block=1,
+                      damage=600, attack_interval=1.0))
+result = Simulator(level, plan).run()
+print(result.summary)            # 击杀 / 漏怪 / 生命 / 最高同时阻挡 / 清场时间
+result.export_video("run.mp4")   # 也可以 .gif
+result.save_json("run.json")     # 逐帧数据 + 事件
+```
+
+只想快速跑一次时可以用一行式入口：`simulate(level, [op1, op2], duration=120)`。
+
+`SimulationResult` 还提供 `frame_at(t)`、`events_of("kill")`、`to_dict()`、`render(t)`；
+`SimLevel` 可被其它工具直接消费（`grid` / `routes` / `spawns` / `enemies`）。
+
 ## 平台支持
 
 窗口查找、截图与输入注入都在 `rtas/platform/` 下按平台实现：
@@ -327,6 +412,12 @@ RTAS/
 │       ├── cli.py          # 命令行实现
 │       ├── data/           # 数据模型、提供者与数据库
 │       ├── map/            # 关卡与地图分析
+│       ├── sim/            # 关卡推演：模型 / 加载 / 引擎 / 渲染 / 子命令
+│       │   ├── model.py    # 地块、路线、敌人档案、干员配置、帧快照
+│       │   ├── loader.py   # 简化格式 + 原版关卡（含 A* 补路线、敌人数据库）
+│       │   ├── engine.py   # 移动 / 阻挡 / 攻击 / 漏怪 的固定步长推演
+│       │   ├── render.py   # 底图、逐帧绘制、mp4/gif 导出
+│       │   └── commands.py # rtas sim map / run / tiles
 │       ├── platform/       # 平台相关的窗口/输入/截图后端
 │       │   ├── base.py     # InputBackend 抽象与 ClickMethod
 │       │   └── windows/    # Win32 输入、窗口查找、WGC 截图
@@ -335,7 +426,7 @@ RTAS/
 │           ├── ocr/        # 可插拔 OCR 后端（easyocr/paddleocr/umi/tesseract）
 │           ├── nav_detector.py  # 主界面/子菜单判定
 │           └── templates/ui/    # 导航按钮等 UI 模板
-└── tests/                  # 许可证、OCR、导航判定、代理与 shell 测试
+└── tests/                  # 许可证、OCR、导航判定、代理/shell、关卡推演测试
 ```
 
 ## 数据来源

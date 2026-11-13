@@ -1925,6 +1925,12 @@ def create_parser() -> argparse.ArgumentParser:
   rtas nav -i shot.png             # 主界面还是子菜单，导航按钮在哪
   rtas ocr --list                  # 查看可用 OCR 引擎
   rtas ocr -i shot.png --engine paddleocr
+
+  # 关卡推演（不需要游戏在运行）
+  rtas sim map -l level.json -t 30 -o t30.png        # 某时刻敌人位置图
+  rtas sim run -l level.json -o run.mp4              # 红门→蓝门无阻挡走位视频
+  rtas sim run -l level.json -p plan.json -o run.mp4 # 带干员的模拟
+  rtas sim tiles -l level.json --plan-template plan.json
         """
     )
 
@@ -2360,6 +2366,61 @@ def create_parser() -> argparse.ArgumentParser:
         type=Path,
         help='输出敌人时间线图片路径'
     )
+
+    # sim 命令（关卡数据推演：位置图 / 视频 / 地块）
+    sim_parser = subparsers.add_parser(
+        'sim',
+        help='关卡推演：某时刻敌人位置图、无阻挡走位视频、带干员的简单模拟'
+    )
+    sim_subparsers = sim_parser.add_subparsers(dest='sim_command', help='推演子命令')
+
+    sim_map = sim_subparsers.add_parser(
+        'map',
+        help='生成某时刻的敌人位置图（不模拟阻挡）'
+    )
+    sim_map.add_argument('-l', '--level', type=Path, required=True,
+                         help='关卡 JSON（RTAS 简化格式或明日方舟原版关卡）')
+    sim_map.add_argument('-t', '--time', action='append', default=None,
+                         help='时刻（秒），可重复或逗号分隔，如 -t 30 或 -t "30,60"')
+    sim_map.add_argument('-o', '--output', type=Path,
+                         help='输出图片路径（多时刻自动加时间后缀）')
+    sim_map.add_argument('--enemy-db', type=Path,
+                         help='敌人数据库（原版关卡默认自动查找 enemydata/enemy_database.json）')
+    sim_map.add_argument('--json', action='store_true', help='以 JSON 输出敌人位置')
+    sim_map.add_argument('--cell', type=int, default=64, help='格子像素（默认: 64）')
+
+    sim_run = sim_subparsers.add_parser(
+        'run',
+        help='运行推演（可部署干员），导出视频与数据'
+    )
+    sim_run.add_argument('-l', '--level', type=Path, required=True,
+                         help='关卡 JSON')
+    sim_run.add_argument('-p', '--plan', type=Path,
+                         help='计划 JSON（干员部署）；可用 `sim tiles --plan-template` 生成模板')
+    sim_run.add_argument('--op', action='append', default=None,
+                         help='内联干员，如 name=近卫,t=5,tile=3:2,block=1,damage=600,'
+                              'interval=1.0,mode=melee,range=1.5（可重复）')
+    sim_run.add_argument('-o', '--video', type=Path, help='输出视频（.mp4 或 .gif）')
+    sim_run.add_argument('--json', dest='json_out', type=Path, help='输出推演数据 JSON')
+    sim_run.add_argument('--no-frames', action='store_true', help='JSON 不包含逐帧数据')
+    sim_run.add_argument('-t', '--duration', type=float, default=None,
+                         help='最长推演时长（秒，默认取计划或 240）')
+    sim_run.add_argument('--dt', type=float, default=None, help='物理步长（默认: 0.1）')
+    sim_run.add_argument('--fps', type=float, default=None, help='视频帧率（默认: 20）')
+    sim_run.add_argument('--speed-scale', type=float, default=None,
+                         help='全局速度倍率（默认: 1.0）')
+    sim_run.add_argument('--cell', type=int, default=64, help='格子像素（默认: 64）')
+    sim_run.add_argument('--enemy-db', type=Path, help='敌人数据库路径')
+
+    sim_tiles = sim_subparsers.add_parser(
+        'tiles',
+        help='列出可部署地块，生成计划模板'
+    )
+    sim_tiles.add_argument('-l', '--level', type=Path, required=True, help='关卡 JSON')
+    sim_tiles.add_argument('--json', action='store_true', help='以 JSON 输出')
+    sim_tiles.add_argument('--plan-template', type=Path,
+                           help='写出计划模板 JSON（填好坐标/时间即可用 -p 运行）')
+    sim_tiles.add_argument('--enemy-db', type=Path, help='敌人数据库路径')
 
     # text 命令（文字定位）
     text_parser = subparsers.add_parser(
@@ -2834,10 +2895,16 @@ def run_ocr_command(args, logger: logging.Logger) -> int:
     return 0
 
 
+def run_sim_command(args, logger: logging.Logger) -> int:
+    """关卡推演：位置图 / 视频 / 带干员的简单模拟。"""
+    from rtas.sim.commands import run as run_sim
+
+    return run_sim(args, logger)
+
+
 # =============================================================================
 # 准备与执行：CLI 与交互式 shell 共用同一条路径
 # =============================================================================
-
 def prepare(
     config_path: Optional[Path] = None,
     log_level: str = "INFO",
@@ -2919,6 +2986,9 @@ def dispatch(
         return run_goto_command(args, logger)
     if args.command == 'key':
         return run_key_command(args, logger)
+    if args.command == 'sim':
+        # 纯数值推演，不需要 OCR 依赖
+        return run_sim_command(args, logger)
 
     # 检查 OCR 引擎
     if not OCR_AVAILABLE:
