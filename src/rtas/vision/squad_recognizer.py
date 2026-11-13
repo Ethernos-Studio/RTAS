@@ -274,14 +274,42 @@ class SquadRecognizer:
         logger.info(f"共识别到 {len(cards)} 个干员")
         return cards
 
+    #: 空位判定：等级圆圈或名称条的“发白像素”占比，低于阈值就当作空位/按钮
+    LEVEL_BRIGHT_MIN = 0.008
+    NAME_BRIGHT_MIN = 0.10
+
+    @staticmethod
+    def _bright_ratio(value: np.ndarray, saturation: np.ndarray,
+                      ratio: Tuple[float, float, float, float]) -> float:
+        """区域里「又亮又不花」的像素占比（白字/白圈占比）。"""
+        height, width = value.shape[:2]
+        x0, y0, w, h = ratio
+        patch_v = value[int(y0 * height):int((y0 + h) * height),
+                        int(x0 * width):int((x0 + w) * width)]
+        patch_s = saturation[int(y0 * height):int((y0 + h) * height),
+                             int(x0 * width):int((x0 + w) * width)]
+        if patch_v.size == 0:
+            return 0.0
+        return float(((patch_v > 190) & (patch_s < 70)).mean())
+
     def _is_valid_card(self, card_image: np.ndarray) -> bool:
-        """空位通常是纯色/暗色占位，用亮度与边缘密度排除。"""
+        """空位判定：空位有斜纹和「+」，光靠边缘密度挡不住，还要看等级圈/名称条。"""
         gray = cv2.cvtColor(card_image, cv2.COLOR_BGR2GRAY) \
             if card_image.ndim == 3 else card_image
         std = float(np.std(gray))
         edges = cv2.Canny(gray, 50, 150)
         edge_ratio = float(np.count_nonzero(edges) / edges.size)
-        return std > 12 and edge_ratio > 0.02
+        if std <= 12 or edge_ratio <= 0.02:
+            return False
+
+        if card_image.ndim == 2:
+            return True
+        hsv = cv2.cvtColor(card_image, cv2.COLOR_BGR2HSV)
+        value, saturation = hsv[:, :, 2], hsv[:, :, 1]
+        # 真卡必有等级圆圈；名称条发白也可以兜底（等级数字被挡时）
+        level = self._bright_ratio(value, saturation, self.config.level_region_ratio)
+        name = self._bright_ratio(value, saturation, self.config.name_region_ratio)
+        return level >= self.LEVEL_BRIGHT_MIN or name >= self.NAME_BRIGHT_MIN
 
     # -- 批量 OCR ---------------------------------------------------------
     def _ocr_montage(self, montage: np.ndarray,

@@ -49,6 +49,27 @@ def test_empty_slot_is_rejected():
     assert recognizer._is_valid_card(noisy) is True
 
 
+def _slot(filled: bool) -> np.ndarray:
+    """造一张编队格：空位是斜纹 + 「+」，真卡是等级圆圈 + 发白名称条。"""
+    card = np.full((248, 113, 3), (40, 50, 62), dtype=np.uint8)
+    for offset in range(-248, 113, 18):
+        cv2.line(card, (offset, 0), (offset + 248, 248), (70, 78, 90), 2)
+    if not filled:
+        cv2.line(card, (46, 150), (66, 150), (150, 155, 160), 4)
+        cv2.line(card, (56, 140), (56, 160), (150, 155, 160), 4)
+        return card
+    cv2.circle(card, (22, 196), 16, (240, 240, 240), 3)
+    cv2.rectangle(card, (10, 220), (70, 236), (245, 245, 245), -1)
+    return card
+
+
+def test_empty_slot_with_stripes_is_not_an_operator():
+    """实机截图里空位有斜纹和「+」，边缘密度够高，必须靠等级圈/名称条挡掉。"""
+    recognizer = SquadRecognizer(SquadConfig())
+    assert recognizer._is_valid_card(_slot(False)) is False
+    assert recognizer._is_valid_card(_slot(True)) is True
+
+
 def test_name_cleaning_and_noise_filter():
     recognizer = SquadRecognizer(SquadConfig())
     assert recognizer._clean_name("伊内丝 E2") == "伊内丝E2"

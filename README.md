@@ -60,6 +60,7 @@ uv run rtas main-menu -i screenshot.png -o result.jpg
 
 # 编队识别
 uv run rtas squad -i squad.png -j report.json
+uv run rtas squad                      # 省略 -i：直接抓当前游戏窗口
 
 # 数据管理
 uv run rtas data sync
@@ -85,6 +86,31 @@ uv run python -m rtas --help
 
 运行后产生的配置、缓存与日志默认位于 `~/.rtas/`（Windows 为 `%USERPROFILE%\.rtas\`）。
 结构化数据库统一位于当前工作目录下的 `cache/rtas_structured.db`。
+
+## 直接截图分析
+
+图像类命令（`detect`、`nav`、`ocr`、`gui`、`main-menu`、`squad`）**省略 `-i` 就会现场抓游戏窗口**
+再分析，不用先手动截图：
+
+```powershell
+# 游戏开着就能直接跑，截到的图会存进 __temp__ 并写进日志
+uv run rtas nav
+uv run rtas squad --json report.json
+uv run rtas detect
+uv run rtas main-menu -o main.jpg
+
+# 窗口标题/进程不含「明日方舟 / arknights」时，用关键字指定
+uv run rtas squad --window MuMu
+uv run rtas nav --window BlueStacks --activate
+```
+
+- 抓图走 Windows Graphics Capture，读窗口自身的画面，**被其它窗口遮挡也能截**，不需要游戏获得焦点。
+- 同时匹配到多个窗口时，取客户区最大的那个（通常是游戏本体，其余多为启动器/工具栏）。
+- 每次都会在 `__temp__` 下留一张 `arknights_<时间戳>.png`，方便回看当时的画面；
+  `--json` 输出里的 `file` 字段就是这张图的路径。
+- `--activate` 会在截图前把窗口切到前台（某些模拟器需要）；默认不抢焦点。
+- `ocr --list` 仍然只列引擎，不会触发截图。
+- 想先确认能匹配到哪些窗口：`uv run rtas capture --list`。
 
 ## OCR 引擎
 

@@ -308,9 +308,10 @@ def test_shell_prefers_session_shortcut_without_flags(fake_agent, monkeypatch):
     payload = shell.execute("nav")
     assert payload["ok"] is True and payload["state"] == "main_menu"
 
-    failed = shell.execute("nav --json")  # CLI 的 nav 需要 -i
-    assert failed["ok"] is False and failed["exit_code"] == 2
-    assert "-i/--image" in failed["error"]
+    # 省略 -i 会去抓游戏窗口；这里指定一个必然不存在的关键字，稳定得到「找不到窗口」
+    failed = shell.execute("nav --json --window __rtas_no_such_window__")
+    assert failed["ok"] is False and failed["exit_code"] == 1
+    assert "窗口" in failed["error"]
     shell.close()
 
 

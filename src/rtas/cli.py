@@ -1863,6 +1863,55 @@ class DataCommands:
 # 命令行参数解析
 # =============================================================================
 
+#: 省略 ``-i`` 时直接抓游戏窗口的命令
+SCREENSHOT_COMMANDS = frozenset({'detect', 'nav', 'ocr', 'gui', 'main-menu', 'squad'})
+
+
+def grab_game_window(args: argparse.Namespace, logger: logging.Logger) -> Path:
+    """抓取游戏窗口当前画面，存进 ``__temp__`` 并返回文件路径。"""
+    from rtas.tools.window_capture import (
+        CaptureError,
+        capture_window,
+        default_temp_dir,
+        find_windows,
+        save_capture,
+    )
+
+    keyword = getattr(args, 'window', None)
+    windows = find_windows([keyword] if keyword else None)
+    if not windows:
+        hint = f"（关键字: {keyword}）" if keyword else ""
+        raise CaptureError(
+            f"没有找到游戏窗口{hint}。先运行 `rtas capture --list` 看看有哪些窗口，"
+            "或用 `--window 关键字` 指定。"
+        )
+
+    # 多个候选时取客户区最大的那个（通常是游戏本体，其余多为启动器/工具栏）
+    window = max(windows, key=lambda item: item.client_rect.area)
+    if len(windows) > 1:
+        logger.info(f"匹配到 {len(windows)} 个窗口，使用客户区最大的：{window.title}")
+
+    image = capture_window(window, activate=bool(getattr(args, 'activate', False)))
+    path = save_capture(image, default_temp_dir())
+    logger.info(f"已截取窗口「{window.title}」 {image.width}x{image.height} -> {path}")
+    return path
+
+
+def add_screenshot_options(parser: argparse.ArgumentParser) -> None:
+    """给图像类命令补上「现场截图」相关选项。"""
+    parser.add_argument(
+        '--window',
+        type=str,
+        default=None,
+        help='窗口标题/进程关键字（默认 明日方舟 / arknights）'
+    )
+    parser.add_argument(
+        '--activate',
+        action='store_true',
+        help='截图前先把游戏窗口切到前台'
+    )
+
+
 def create_parser() -> argparse.ArgumentParser:
     """创建参数解析器"""
     parser = argparse.ArgumentParser(
@@ -1920,6 +1969,11 @@ def create_parser() -> argparse.ArgumentParser:
   # 测试截图
   rtas capture                     # 截取明日方舟窗口到 __temp__
   rtas capture --list              # 查看可截图的窗口
+
+  # 图像类命令省略 -i 就直接抓游戏窗口（detect/nav/ocr/gui/main-menu/squad）
+  rtas nav                         # 抓当前画面判断主界面还是子菜单
+  rtas squad -j report.json        # 抓当前画面识别编队
+  rtas squad --window MuMu         # 窗口标题不含「明日方舟」时用关键字指定
 
   # 导航判定 / OCR 引擎
   rtas nav -i shot.png             # 主界面还是子菜单，导航按钮在哪
@@ -1990,8 +2044,9 @@ def create_parser() -> argparse.ArgumentParser:
     detect_parser.add_argument(
         '-i', '--image',
         type=Path,
-        help='单张图像文件路径'
+        help='单张图像文件路径（省略则直接抓游戏窗口）'
     )
+    add_screenshot_options(detect_parser)
     detect_parser.add_argument(
         '-b', '--batch',
         type=Path,
@@ -2086,9 +2141,9 @@ def create_parser() -> argparse.ArgumentParser:
     nav_parser.add_argument(
         '-i', '--image',
         type=Path,
-        required=True,
-        help='截图路径'
+        help='截图路径（省略则直接抓游戏窗口）'
     )
+    add_screenshot_options(nav_parser)
     nav_parser.add_argument(
         '-o', '--output',
         type=Path,
@@ -2211,8 +2266,9 @@ def create_parser() -> argparse.ArgumentParser:
     ocr_parser.add_argument(
         '-i', '--image',
         type=Path,
-        help='要识别的图片'
+        help='要识别的图片（省略则直接抓游戏窗口，配合 --list 只列引擎）'
     )
+    add_screenshot_options(ocr_parser)
     ocr_parser.add_argument(
         '--engine',
         choices=['auto', 'easyocr', 'paddleocr', 'umi', 'tesseract'],
@@ -2233,9 +2289,9 @@ def create_parser() -> argparse.ArgumentParser:
     gui_parser.add_argument(
         '-i', '--image',
         type=Path,
-        required=True,
-        help='输入图像路径'
+        help='输入图像路径（省略则直接抓游戏窗口）'
     )
+    add_screenshot_options(gui_parser)
     gui_parser.add_argument(
         '-t', '--template',
         type=str,
@@ -2272,9 +2328,9 @@ def create_parser() -> argparse.ArgumentParser:
     main_menu_parser.add_argument(
         '-i', '--image',
         type=Path,
-        required=True,
-        help='主界面截图路径'
+        help='主界面截图路径（省略则直接抓游戏窗口）'
     )
+    add_screenshot_options(main_menu_parser)
     main_menu_parser.add_argument(
         '-o', '--output',
         type=Path,
@@ -2305,9 +2361,9 @@ def create_parser() -> argparse.ArgumentParser:
     squad_parser.add_argument(
         '-i', '--image',
         type=Path,
-        required=True,
-        help='编队截图路径'
+        help='编队截图路径（省略则直接抓游戏窗口）'
     )
+    add_screenshot_options(squad_parser)
     squad_parser.add_argument(
         '-o', '--output',
         type=Path,
@@ -2972,6 +3028,18 @@ def dispatch(
         engine=args.ocr or cli_config.ocr_engine or None,
         url=args.ocr_url or cli_config.ocr_url or None,
     )
+
+    # 图像类命令省略 -i 时：直接抓游戏窗口，落盘后按普通图片继续分析
+    if (args.command in SCREENSHOT_COMMANDS
+            and getattr(args, 'image', None) is None
+            and not (args.command == 'ocr' and getattr(args, 'list', False))):
+        from rtas.tools.window_capture import CaptureError
+
+        try:
+            args.image = grab_game_window(args, logger)
+        except CaptureError as exc:
+            logger.error(f"截图失败：{exc}")
+            return 1
 
     # nav / ocr / shell / click / goto / key 是独立命令，不依赖检测器
     if args.command == 'nav':
