@@ -165,6 +165,7 @@ class Gallery:
         prototypes_per_code: int = 4,
         keep_codes: Iterable[str] | None = None,
         diversity: float = 0.96,
+        reference_dir: Path | None = None,
     ) -> "Gallery":
         """从 ``dataset/crops/<编号>/*.png`` 建多原型图库。
 
@@ -200,6 +201,24 @@ class Gallery:
                 codes.append(folder.name)
                 prototypes.append(unit.astype(np.float32))
             samples[folder.name] = kept
+
+        # 官方渲染图（tools/render_reference.py 从游戏 Spine 渲出来的干净全身图）
+        # 单独作为原型加进去：它没有遮挡/受击变色，是最稳定的锚点
+        if reference_dir is not None:
+            reference_dir = Path(reference_dir)
+            if reference_dir.exists():
+                for image_path in sorted(reference_dir.glob("*.png")):
+                    code = image_path.stem
+                    if allowed is not None and code not in allowed:
+                        continue
+                    image = cv2.imread(str(image_path))
+                    if image is None or not image.size:
+                        continue
+                    unit = encoder.embed([image])[0]
+                    unit /= max(float(np.linalg.norm(unit)), 1e-6)
+                    codes.append(code)
+                    prototypes.append(unit.astype(np.float32))
+                    samples[code] = samples.get(code, 0) + 1
 
         if not prototypes:
             raise RuntimeError(f"{crops_dir} 里没有足够的裁剪图（每类至少 {min_crops} 张）")

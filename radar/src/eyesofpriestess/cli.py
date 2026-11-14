@@ -798,6 +798,7 @@ def cmd_gallery_build(args: argparse.Namespace) -> int:
         min_crops=args.min_crops,
         prototypes_per_code=args.prototypes,
         keep_codes=keep,
+        reference_dir=Path(args.reference) if args.reference else None,
     )
     out = Path(args.out) if args.out else layout.weights / "gallery.npz"
     gallery.save(out)
@@ -1349,6 +1350,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-per-code", type=int, default=240)
     p.add_argument("--min-crops", type=int, default=5)
     p.add_argument("--prototypes", type=int, default=4, help="每类保留几个原型（覆盖动作/差分）")
+    p.add_argument("--reference", default="reference/enemies",
+                   help="官方渲染参考图目录（每个编号一张 png，来自 tools/render_reference.py）")
     p.add_argument("--include-all", action="store_true",
                    help="连非 enemy 类也放进图库（默认只放图鉴编号对应的敌人）")
     p.set_defaults(func=cmd_gallery_build)
