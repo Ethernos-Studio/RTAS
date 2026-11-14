@@ -50,6 +50,8 @@ class BuildOptions:
     min_box_side: int = 3
     #: 给这些 YOLO 类裁身份图库素材
     crop_classes: tuple[str, ...] = ("enemy",)
+    #: 背景图目录（里面是没有敌人的帧），会以"空标签"进训练集，教模型别乱框
+    backgrounds: tuple[str, ...] = ()
     #: 只在战场区域里跑 SAM（相对整幅的比例 x0,y0,x1,y1）；None = 整帧
     region: tuple[float, float, float, float] | None = None
     #: 在 region 内再降采样，提速用（0.5 = 边长减半）
@@ -155,6 +157,16 @@ def build(
     """跑完整个 SAM -> YOLO 数据集体检，返回报告（同时写 report.json / data.yaml）。"""
     options = options or BuildOptions()
     report = BuildReport()
+
+    # 背景图：没有标注目标，只放图片 + 空 txt（YOLO 会当成负样本）
+    background_files: list[Path] = []
+    for entry in options.backgrounds:
+        path = Path(entry)
+        if path.is_dir():
+            background_files.extend(sorted(path.glob("*.jpg")) + sorted(path.glob("*.png")))
+        elif path.exists():
+            background_files.append(path)
+
 
     manifest = load_manifest(manifest_path)
     if not manifest:
@@ -278,6 +290,18 @@ def build(
             "boxes": len(lines),
             "ignore": len(ignores),
         }
+
+    # 背景图（没有敌人的帧）：图片进 images/train，标签写成空文件，
+    # YOLO 会当成负样本，专门压住"干员/立绘/召唤物被当成敌人"这类误检
+    backgrounds_written = 0
+    for source in background_files:
+        target_name = f"bg_{source.stem}{source.suffix.lower()}"
+        shutil.copyfile(source, out / "images" / "train" / target_name)
+        (out / "labels" / "train" / f"{Path(target_name).stem}.txt").write_text("", encoding="utf-8")
+        backgrounds_written += 1
+    if backgrounds_written:
+        print(f"背景图 {backgrounds_written} 张已加入训练集")
+        report.warnings.append(f"背景图 {backgrounds_written} 张")
 
     # 出框率报警：mobile_sam 对 <30px 的目标经常整片 mask 失败（HANDOFF §6.4）
     if report.points:
