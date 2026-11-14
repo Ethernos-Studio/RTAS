@@ -16,6 +16,21 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
+def embedder_for(gallery) -> Path | None:
+    """图库是 256 维说明用训练过的 embedding 建的；512 维才是 ImageNet 特征。"""
+    try:
+        import numpy as np
+        data = np.load(str(gallery), allow_pickle=False)
+        dim = int(data["prototypes"].shape[1])
+    except Exception:
+        return None
+    checkpoint = Path(gallery).parent / "embedder.pt"
+    if dim == 512 or not checkpoint.exists():
+        return None
+    return checkpoint
+
+
+
 OUT = ROOT / "out"
 WEIGHTS = ROOT / "runs" / "arknights" / "v1" / "weights" / "best.pt"
 GALLERY = ROOT / "weights" / "gallery.npz"
@@ -64,7 +79,7 @@ def main() -> int:
 
     model = YOLO(str(WEIGHTS))
     gallery = Gallery.load(GALLERY)
-    encoder = Encoder("resnet18")
+    encoder = Encoder("resnet18", checkpoint=embedder_for(GALLERY))
 
     want = int(round(args.seconds * FPS))
     writer = cv2.VideoWriter(args.out, cv2.VideoWriter_fourcc(*"mp4v"), FPS, SIZE)

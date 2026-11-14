@@ -1,104 +1,149 @@
-"""战斗相机模型（结论来自群友逆向资料的结论段，未使用其任何代码/工具）。
+"""战斗相机模型（结论来自群友逆向资料的"结论"段，未使用其任何代码/工具）。
 
-采用的结论：
-* 战斗相机是**透视**：fov 40°，位置约 (0, -0.30, 9.11)，俯仰 30°；
-  剧情/AVG 用的 `AVGCamera_Scene` 才是正交 3.6，战场不用它。
-* 投影链：`clip = M·(x,y,z,1)`（列主序），`ndc = clip.xy / clip.w`，
-  `screen = ((ndc.x+1)/2·W, (1-ndc.y)/2·H)`。
-* 本作 Transform 层级里旋转恒为单位、scale 恒为 1 → **世界坐标 = 沿父链把 position 直接相加**。
-* 地图坐标→世界坐标：`world_x = a - map_x`、`world_z = map_y - b`、`world_y = 0`；
-  但 **a/b 每张图不同**（资料里 TR-4 的 1.2 / 3.5 换图就失效），必须每关标一次。
-* 投影误差：y 方向约偏 25~30px（模型脚底与 Transform 原点之差）——用合成标签时记得补这个偏移。
+资料给出的实测矩阵（Unity 内存里是**列主序**，这里换成数学上的行主序）：
 
-这些只是"通过图像验证过的相机参数"，与反作弊/内存读取无关；
-本模块把它们写成纯数学，供合成数据渲染和格子坐标换算使用。
+视图矩阵 V（世界 -> 相机）::
+
+    [1,     0,     0,      0    ]
+    [0,     0.866, -0.5,   0.286]
+    [0,    -0.5,   -0.866, -9.125]
+    [0,     0,      0,     1    ]
+
+* 3×3 部分是加俯仰 30° 的旋转（cos30=0.866、sin30=0.5）
+* 平移 (0, 0.286, -9.125) —— 相机在地面上方 9.125 个单位
+
+投影矩阵 P（透视，Unity 约定）::
+
+    [1.2687, 0,       0,       0     ]
+    [0,      2.7475,  0,       0     ]
+    [0,      0,      -1.0006, -0.6002]
+    [0,      0,      -1,       0     ]
+
+用资料里的验证点（2772×1280 屏）：world(0,0,0) -> (1386, 585)；
+world(1,0,0) -> (1578.7, 585)：即 1 个世界单位 ≈ 193px（横向）。
+
+地图坐标 -> 世界坐标（资料实测，**每张图的 offset 不同**）：:
+
+    world_x = a - map_x
+    world_z = map_y - b
+    world_y = 0
+
+资料里 TR-4 的 (a, b) = (1.2, 3.5)，换图即失效，所以这里只提供拟合函数。
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
+
+#: 资料实测的视图矩阵（已转成行主序）
+DEFAULT_VIEW = np.array([
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 0.8660254, -0.5, 0.286],
+    [0.0, -0.5, -0.8660254, -9.125],
+    [0.0, 0.0, 0.0, 1.0],
+], dtype=np.float64)
+
+#: 资料实测的投影矩阵（已转成行主序）
+DEFAULT_PROJECTION = np.array([
+    [1.2687, 0.0, 0.0, 0.0],
+    [0.0, 2.7475, 0.0, 0.0],
+    [0.0, 0.0, -1.0006, -0.6002],
+    [0.0, 0.0, -1.0, 0.0],
+], dtype=np.float64)
 
 
 @dataclass
 class BattleCamera:
-    """战场透视相机（默认参数来自实测结论）。"""
+    """战场透视相机：默认用实测矩阵，也可以按 fov/俯仰构造。"""
 
     screen_w: int = 1920
     screen_h: int = 1080
-    fov_deg: float = 40.0
-    position: tuple[float, float, float] = (0.0, -0.30, 9.11)
-    pitch_deg: float = 30.0          # 相机向下俯视角度
+    view: np.ndarray = field(default_factory=lambda: DEFAULT_VIEW.copy())
+    projection: np.ndarray = field(default_factory=lambda: DEFAULT_PROJECTION.copy())
 
-    def _view(self) -> np.ndarray:
-        """世界 -> 相机（列主序风格：world2cam）。"""
-        pitch = math.radians(self.pitch_deg)
+    # -- 构造 -------------------------------------------------------------
+    @classmethod
+    def from_pose(
+        cls,
+        *,
+        screen_w: int = 1920,
+        screen_h: int = 1080,
+        fov_deg: float = 40.0,
+        pitch_deg: float = 30.0,
+        height: float = 9.125,
+        y_offset: float = 0.286,
+        near: float = 0.6,
+        far: float = 100.0,
+    ) -> "BattleCamera":
+        """按"fov + 俯仰 + 高度"构造——合成数据渲染时改角度用这个。"""
+        pitch = math.radians(pitch_deg)
         cos_p, sin_p = math.cos(pitch), math.sin(pitch)
-        # 先绕 X 轴俯仰（让相机朝下看地面），再平移到相机位置
-        rotation = np.array([
-            [1.0, 0.0, 0.0],
-            [0.0, cos_p, -sin_p],
-            [0.0, sin_p, cos_p],
+        view = np.array([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, cos_p, -sin_p, y_offset],
+            [0.0, -sin_p, -cos_p, -height],
+            [0.0, 0.0, 0.0, 1.0],
         ], dtype=np.float64)
-        camera = np.eye(4, dtype=np.float64)
-        camera[:3, :3] = rotation
-        camera[:3, 3] = -rotation @ np.array(self.position, dtype=np.float64)
-        return camera
+        aspect = screen_w / screen_h
+        focal = 1.0 / math.tan(math.radians(fov_deg) / 2.0)
+        projection = np.array([
+            [focal / aspect, 0.0, 0.0, 0.0],
+            [0.0, focal, 0.0, 0.0],
+            [0.0, 0.0, -1.0006, -near * 1.0006],
+            [0.0, 0.0, -1.0, 0.0],
+        ], dtype=np.float64)
+        return cls(screen_w=screen_w, screen_h=screen_h, view=view, projection=projection)
 
-    def _projection(self) -> np.ndarray:
-        fov = math.radians(self.fov_deg)
-        aspect = self.screen_w / self.screen_h
-        focal = 1.0 / math.tan(fov / 2.0)
-        projection = np.zeros((4, 4), dtype=np.float64)
-        projection[0, 0] = focal / aspect
-        projection[1, 1] = focal
-        projection[2, 2] = -1.002
-        projection[2, 3] = -1.0
-        projection[3, 2] = -0.06
-        return projection
-
+    # -- 投影 -------------------------------------------------------------
     def project(self, world: tuple[float, float, float]) -> tuple[float, float, float] | None:
         """世界坐标 -> (屏幕 x, 屏幕 y, 深度)；在相机后方返回 None。"""
-        point = np.array([*world, 1.0], dtype=np.float64)
-        clip = self._projection() @ (self._view() @ point)
+        point = np.array([world[0], world[1], world[2], 1.0], dtype=np.float64)
+        clip = self.projection @ (self.view @ point)
         if abs(clip[3]) < 1e-9:
             return None
         ndc = clip[:3] / clip[3]
-        if ndc[2] <= 0:
+        if ndc[2] < -1.0 or ndc[2] > 1.0:
             return None
         x = (ndc[0] + 1.0) * 0.5 * self.screen_w
         y = (1.0 - ndc[1]) * 0.5 * self.screen_h
         return float(x), float(y), float(clip[3])
 
     def project_map(self, map_x: float, map_y: float, offset: tuple[float, float]) -> tuple[float, float] | None:
-        """地图格子坐标（浮点）-> 屏幕像素。offset 是每关不同的 (a, b)。"""
+        """地图坐标 -> 屏幕像素；offset 是每关不同的 (a, b)。"""
         a, b = offset
-        world = (a - map_x, 0.0, map_y - b)
-        result = self.project(world)
+        result = self.project((a - map_x, 0.0, map_y - b))
         return None if result is None else (result[0], result[1])
 
+    # -- 标定 -------------------------------------------------------------
+    def fit_offset(self, correspondences: list[tuple[float, float, float, float]],
+                   guess: tuple[float, float] = (1.2, 3.5)) -> tuple[float, float]:
+        """用 (map_x, map_y, screen_x, screen_y) 对应点拟合每关的 (a, b)。
 
-def fit_offset(
-    camera: BattleCamera,
-    correspondences: list[tuple[float, float, float, float]],
-) -> tuple[float, float]:
-    """用 (map_x, map_y, screen_x, screen_y) 对应点最小二乘拟合每关的 (a, b)。
+        没有 SciPy 也能跑：先粗网格搜，再局部细化。
+        """
+        def loss(a: float, b: float) -> float:
+            total = 0.0
+            for map_x, map_y, screen_x, screen_y in correspondences:
+                projected = self.project_map(map_x, map_y, (a, b))
+                if projected is None:
+                    return float("inf")
+                total += (projected[0] - screen_x) ** 2 + (projected[1] - screen_y) ** 2
+            return total
 
-    相机固定、只差平移偏移时，用 Nelder-Mead 在 (a,b) 上搜最小重投影误差即可。
-    """
-    from scipy.optimize import minimize
-
-    def loss(params: np.ndarray) -> float:
-        a, b = float(params[0]), float(params[1])
-        total = 0.0
-        for map_x, map_y, screen_x, screen_y in correspondences:
-            projected = camera.project_map(map_x, map_y, (a, b))
-            if projected is None:
-                return 1e9
-            total += (projected[0] - screen_x) ** 2 + (projected[1] - screen_y) ** 2
-        return total
-
-    result = minimize(loss, np.array([1.2, 3.5]), method="Nelder-Mead")
-    return float(result.x[0]), float(result.x[1])
+        best = (guess[0], guess[1], loss(*guess))
+        step = 2.0
+        for _ in range(6):
+            improved = True
+            while improved:
+                improved = False
+                for dx, dy in ((step, 0), (-step, 0), (0, step), (0, -step)):
+                    candidate = (best[0] + dx, best[1] + dy)
+                    value = loss(*candidate)
+                    if value < best[2] - 1e-6:
+                        best = (candidate[0], candidate[1], value)
+                        improved = True
+            step /= 2.0
+        return best[0], best[1]

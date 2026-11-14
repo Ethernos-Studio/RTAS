@@ -264,6 +264,12 @@ class Gallery:
         if not self.codes or embeddings.size == 0:
             return [Match(code="") for _ in range(len(embeddings))]
 
+        if embeddings.shape[1] != self.prototypes.shape[1]:
+            raise ValueError(
+                f"特征维度不匹配：图库是 {self.prototypes.shape[1]} 维，编码器输出 {embeddings.shape[1]} 维。"
+                "图库是用 ImageNet 特征建的就得用纯 resnet18，用训练过的 embedding 建的就得带 --embedder；"
+                "重建一次 `radar gallery-build --embedder weights/embedder.pt` 即可对齐。"
+            )
         raw = embeddings @ self.prototypes.T              # (n, P) 与每个原型的相似度
         unique = self.unique_codes
         per_code = np.stack([raw[:, self._index[code]].max(axis=1) for code in unique], axis=1)

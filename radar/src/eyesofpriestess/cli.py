@@ -701,6 +701,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     options = BuildOptions(
         val_ratio=args.val_ratio,
         seed=args.seed,
+        val_videos=tuple(args.val_videos) if getattr(args, "val_videos", None) else None,
         min_box_area=args.min_box_area,
         region=tuple(float(v) for v in args.region.split(",")) if args.region else None,
         downscale=args.downscale,
@@ -743,6 +744,7 @@ def cmd_train(args: argparse.Namespace) -> int:
         project=Path(args.project) if args.project else None,
         name=args.name,
         device=args.device,
+        workers=getattr(args, "workers", 2),
     )
     save_dir = getattr(getattr(model, "trainer", None), "save_dir", None)
     print(f"训练完成: {save_dir}")
@@ -1382,6 +1384,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sam", help="SAM 权重（默认 weights/mobile_sam.pt，没有就让 ultralytics 下）")
     p.add_argument("--val-ratio", type=float, default=0.2)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--val-videos", nargs="*",
+                   help="固定这些视频当验证集（例如 v002_1-9），保证多次训练指标可比")
     p.add_argument("--min-box-area", type=int, default=20)
     p.add_argument("--region", help="只在战场区域跑 SAM: x0,y0,x1,y1（0~1 比例）")
     p.add_argument("--downscale", type=float, default=1.0, help="SAM 前降采样，0.5 提速")
@@ -1439,6 +1443,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project")
     p.add_argument("--name", default="v0")
     p.add_argument("--device")
+    p.add_argument("--workers", type=int, default=2,
+                   help="dataloader 进程数（Windows 上默认 2，多了容易 OOM）")
     p.set_defaults(func=cmd_train)
 
     p = sub.add_parser("export", help="导出 ONNX / TensorRT")

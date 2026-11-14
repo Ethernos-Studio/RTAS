@@ -72,6 +72,7 @@ def train(
     project: Path | None = None,
     name: str = "v0",
     device: str | None = None,
+    workers: int = 2,
     resume: bool = False,
     extra: dict[str, Any] | None = None,
 ) -> Any:
@@ -96,6 +97,7 @@ def train(
         lr0=0.001,
         lrf=0.01,
         freeze=freeze,
+        workers=workers,
         mosaic=1.0,
         close_mosaic=20,
         fliplr=0.5,

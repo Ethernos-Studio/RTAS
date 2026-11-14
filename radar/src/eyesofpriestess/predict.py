@@ -102,7 +102,13 @@ def predict_track(
     if gallery:
         from .identity import Encoder, Gallery
 
-        identifier = (Gallery.load(Path(gallery)), Encoder("resnet18", device=device))
+        loaded = Gallery.load(Path(gallery))
+        # 图库维度决定用哪个编码器：512 = ImageNet 特征，256 = 训练过的 embedding
+        dim = int(loaded.prototypes.shape[1]) if loaded.prototypes.size else 512
+        checkpoint = Path(gallery).parent / "embedder.pt"
+        if dim == 512 or not checkpoint.exists():
+            checkpoint = None
+        identifier = (loaded, Encoder("resnet18", device=device, checkpoint=checkpoint))
 
     frames_written = 0
     units_total = 0

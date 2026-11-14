@@ -25,6 +25,21 @@ import cv2
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
+def embedder_for(gallery) -> Path | None:
+    """图库是 256 维说明用训练过的 embedding 建的；512 维才是 ImageNet 特征。"""
+    try:
+        import numpy as np
+        data = np.load(str(gallery), allow_pickle=False)
+        dim = int(data["prototypes"].shape[1])
+    except Exception:
+        return None
+    checkpoint = Path(gallery).parent / "embedder.pt"
+    if dim == 512 or not checkpoint.exists():
+        return None
+    return checkpoint
+
+
+
 sys.path.insert(0, str(ROOT / "src"))
 
 WEIGHTS = ROOT / "runs" / "arknights" / "v1" / "weights" / "best.pt"
@@ -60,7 +75,7 @@ def main() -> int:
     use_identity = not args.no_identity
     model = YOLO(str(WEIGHTS))
     gallery = Gallery.load(GALLERY) if use_identity else None
-    encoder = Encoder("resnet18", device="cuda") if use_identity else None
+    encoder = Encoder("resnet18", device="cuda", checkpoint=embedder_for(GALLERY)) if use_identity else None
     tracker = SimpleTracker(iou_threshold=0.25)
     labels: dict[int, object] = {}
 

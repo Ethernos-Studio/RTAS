@@ -43,6 +43,8 @@ IGNORE_BOX_SIDE = 0.05
 @dataclass
 class BuildOptions:
     val_ratio: float = 0.2
+    #: 固定这些视频当验证集（None = 按 val_ratio 随机挑，加录像会换 val，指标不可比）
+    val_videos: tuple[str, ...] | None = None
     seed: int = 42
     min_box_area: int = 20
     min_box_side: int = 3
@@ -172,7 +174,17 @@ def build(
         if frame not in known_frames:
             report.warnings.append(f"跳过 {frame}：manifest 里没有，或帧文件不存在")
 
-    val_videos, split_of = _split_by_video(known_frames, options.val_ratio, options.seed, report.warnings)
+    if options.val_videos:
+        explicit = {video for video in options.val_videos if video in {e.video for e in known_frames.values()}}
+        if explicit:
+            val_videos = explicit
+            split_of = {frame: ("val" if entry.video in val_videos else "train")
+                        for frame, entry in known_frames.items()}
+        else:
+            report.warnings.append(f"--val-videos 里没有 manifest 中的视频: {options.val_videos}")
+            val_videos, split_of = _split_by_video(known_frames, options.val_ratio, options.seed, report.warnings)
+    else:
+        val_videos, split_of = _split_by_video(known_frames, options.val_ratio, options.seed, report.warnings)
     report.val_videos = sorted(val_videos)
 
     # 先清掉上一次的产物：不清的话旧 split 的图会留在 val 里（既过时又泄漏）
