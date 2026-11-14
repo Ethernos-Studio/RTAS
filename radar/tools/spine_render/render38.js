@@ -23,7 +23,7 @@ function loadSpine() {
   vm.createContext(sandbox);
   vm.runInContext("var spine = {};", sandbox);
   for (const file of ["spine-core.js", "spine-canvas.js"]) {
-    vm.runInContext(fs.readFileSync(path.join(__dirname, file), "utf8"), sandbox, { filename: file });
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "vendor", file), "utf8"), sandbox, { filename: file });
   }
   return sandbox.spine;
 }

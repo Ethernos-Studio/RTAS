@@ -39,3 +39,7 @@ train_v*.log
 
 # 内网穿透客户端（二进制 + 含 token 的配置 + 压缩包，绝不入库）
 tools/frp_*
+
+# node 依赖（Spine 渲染工具的 node_modules）
+tools/spine_render/node_modules/
+

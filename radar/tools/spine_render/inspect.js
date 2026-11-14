@@ -1,4 +1,4 @@
-// 诊断：把 skeleton 的 slot/附件 和 atlas 的 region 名对照出来，看差在哪。
+﻿// 诊断：把 skeleton 的 slot/附件 和 atlas 的 region 名对照出来，看差在哪。
 //
 // 用法：node inspect.js <atlas> <skel>
 
@@ -18,7 +18,7 @@ function loadSpine() {
   vm.createContext(sandbox);
   vm.runInContext("var spine = {};", sandbox);
   for (const file of ["spine-core.js", "spine-canvas.js"]) {
-    vm.runInContext(fs.readFileSync(path.join(__dirname, file), "utf8"), sandbox, { filename: file });
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "vendor", file), "utf8"), sandbox, { filename: file });
   }
   return sandbox.spine;
 }
