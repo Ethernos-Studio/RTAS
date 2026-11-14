@@ -513,6 +513,8 @@ def main() -> int:
                    help="不做放大（默认把小于 1600 宽的画面放大到 1920 再推理）")
     parser.add_argument("--target-fps", type=float, default=20.0, help="抓屏节流（太高会和推理抢 CPU）")
     parser.add_argument("--no-wgc", action="store_true", help="强制用 PrintWindow 抓屏")
+    parser.add_argument("--bar-gate", action="store_true",
+                   help="用血条颜色压掉干员（实验性：实测误杀 22.7%% 真敌人，默认关）")
     args = parser.parse_args()
     weights = Path(args.weights) if args.weights else _latest_weights()
     gallery = Path(args.gallery) if args.gallery and Path(args.gallery).exists() else None
@@ -524,7 +526,7 @@ def main() -> int:
     warmup = np.zeros((720, 1280, 3), dtype=np.uint8)
     pipeline.step(warmup)
     print("预热完成，开始实时推理")
-    states: dict = {"upscale": not args.no_upscale, "running": True, "units": [], "fps": 0.0, "conf": args.conf,
+    states: dict = {"bar_gate": bool(args.bar_gate), "upscale": not args.no_upscale, "running": True, "units": [], "fps": 0.0, "conf": args.conf,
                     "paused": False, "width": 1280, "height": 720, "left": 80, "top": 80}
     grabber = None
     camera = None
@@ -616,6 +618,16 @@ def main() -> int:
                 target_h = int(round(frame.shape[0] * target_w / frame.shape[1]))
                 frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
             units = pipeline.step(frame)
+            if states.get("bar_gate"):
+                from eyesofpriestess.cv.hpbar_gate import keep_as_enemy
+
+                kept = []
+                for unit in units:
+                    x, y, w, h = unit.box
+                    is_enemy, _color = keep_as_enemy(frame, [x, y, x + w, y + h])
+                    if is_enemy:
+                        kept.append(unit)
+                units = kept
             states["units"] = units
             states["frames"] = states.get("frames", 0) + 1
             states["fps"] = 1.0 / max(1e-6, time.perf_counter() - start)
