@@ -168,7 +168,11 @@ def _infer(
     raw = []
     for box in boxes:
         x1, y1, x2, y2 = (float(value) for value in box.xyxy[0])
-        raw.append((x1, y1, x2, y2, int(box.cls), float(box.conf),
+        cls = int(box.cls)
+        # operator 类是专门用来"压掉干员"的负类，不进场景图
+        if names.get(cls) == "operator":
+            continue
+        raw.append((x1, y1, x2, y2, cls, float(box.conf),
                     int(box.id[0]) if getattr(box, "id", None) is not None else -1))
 
     merged = MergeSuppressor()([[item[0], item[1], item[2], item[3]] for item in raw])

@@ -240,8 +240,10 @@ class Pipeline:
         result = self.model.predict(frame, imgsz=self.config.imgsz, conf=self.config.conf,
                                     iou=self.config.iou, verbose=False, device="0")[0]
         raw = []
+        names = getattr(result, "names", {}) or {}
         for box in result.boxes or []:
-            if int(box.cls[0]) != 0:
+            cls = int(box.cls[0])
+            if cls != 0:                       # 只要 enemy
                 continue
             x1, y1, x2, y2 = (float(v) for v in box.xyxy[0].tolist())
             raw.append([x1, y1, x2, y2])

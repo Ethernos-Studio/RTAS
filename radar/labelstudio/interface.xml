@@ -22,6 +22,7 @@
     <Label value="other_enemy" hotkey="b" background="#2a6" showAlias="false"/>
     <Label value="U17" hotkey="i" background="#a6f" showAlias="false"/>
     <Label value="ally" hotkey="v" background="#a6f" showAlias="false"/>
+    <Label value="OP" hotkey="o" background="#888" showAlias="false"/>
     <Label value="IGNORE-occluded" hotkey="z" background="#f44" showAlias="false"/>
     <Label value="IGNORE-blurry" hotkey="x" background="#f44" showAlias="false"/>
   </KeyPointLabels>
