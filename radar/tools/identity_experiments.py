@@ -1,4 +1,4 @@
-"""身份匹配方案对比实验：同一划分下试多种特征/融合策略，挑最好的。
+﻿"""身份匹配方案对比实验：同一划分下试多种特征/融合策略，挑最好的。
 
 划分：留出整段 `v001_1-8` 当验证（同帧相邻裁图不跨集），其余视频训练。
 指标：top-1（只统计训练里出现过的编号，没见过的编号不能用原型匹配）。
@@ -64,7 +64,9 @@ def main() -> int:
     print(f"训练 {len(train_items)} / 验证 {len(val_items)}（{sorted({i.code for i in val_items})}）")
 
     baseline = Encoder("resnet18")
-    arc = trained_model(ROOT / "weights" / "embedder.pt")
+    ckpt = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "weights" / "embedder.pt"
+    arc = trained_model(ckpt)
+    print(f"checkpoint: {ckpt.name}")
 
     def emb_imagenet(path: Path) -> np.ndarray:
         image = cv2.imread(str(path))
