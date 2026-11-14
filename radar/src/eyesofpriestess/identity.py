@@ -137,12 +137,19 @@ class Encoder:
 
 
 def _prepare(crop: np.ndarray) -> np.ndarray:
-    """裁剪图 -> 224x224 RGB 归一化数组（BGR 输入）。"""
+    """裁剪图 -> 224x224 RGB 归一化数组（BGR 输入，保持长宽比）。"""
     image = crop
     if image.ndim == 2:
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    image = cv2.resize(image, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_AREA)
-    rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    height, width = image.shape[:2]
+    scale = INPUT_SIZE / max(height, width, 1)
+    resized = cv2.resize(image, (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+                         interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((INPUT_SIZE, INPUT_SIZE, 3), dtype=np.uint8)
+    top = (INPUT_SIZE - resized.shape[0]) // 2
+    left = (INPUT_SIZE - resized.shape[1]) // 2
+    canvas[top:top + resized.shape[0], left:left + resized.shape[1]] = resized
+    rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     return (rgb - MEAN) / STD
 
 

@@ -71,10 +71,29 @@ def _augment(image: np.ndarray, rng: random.Random) -> np.ndarray:
     return crop
 
 
+def letterbox(image: np.ndarray, size: int = INPUT_SIZE) -> np.ndarray:
+    """保比例缩放到 size×size 并居中补黑。
+
+    实验（tools/identity_experiments2.py，留出整段 1-8）：拉伸 78.1% -> letterbox 86.2%。
+    敌人的"近大远小"只改变尺寸、不改变形状，所以千万别把长宽比揉掉。
+    """
+    height, width = image.shape[:2]
+    if height == 0 or width == 0:
+        return np.zeros((size, size, 3), dtype=np.uint8)
+    scale = size / max(height, width)
+    resized = cv2.resize(image, (max(1, int(round(width * scale))), max(1, int(round(height * scale)))),
+                         interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((size, size, 3), dtype=np.uint8)
+    top = (size - resized.shape[0]) // 2
+    left = (size - resized.shape[1]) // 2
+    canvas[top:top + resized.shape[0], left:left + resized.shape[1]] = resized
+    return canvas
+
+
 def to_tensor(image: np.ndarray) -> np.ndarray:
-    """BGR 图 -> (3,224,224) 归一化数组。"""
-    resized = cv2.resize(image, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_AREA)
-    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    """BGR 图 -> (3,224,224) 归一化数组（letterbox，不拉伸）。"""
+    square = letterbox(image)
+    rgb = cv2.cvtColor(square, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     normalized = (rgb - MEAN) / STD
     return np.transpose(normalized, (2, 0, 1))
 
