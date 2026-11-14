@@ -1,4 +1,4 @@
-"""``radar`` 命令行：抽帧 -> 标注 -> 出框 -> 训练 -> 预测，一条链路到底。
+﻿"""``radar`` 命令行：抽帧 -> 标注 -> 出框 -> 训练 -> 预测，一条链路到底。
 
     uv run radar extract   --src raw/1-7.mp4            # 视频 -> frames/ + manifest
     uv run radar ls-tasks                               # frames -> tasks/ls_tasks.json
@@ -1227,7 +1227,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 
 def _default_weights(layout: Layout, name: str) -> Path:
-    candidate = layout.runs / "arknights" / name / "weights" / "best.pt"
+    """按名字找权重；``name`` 为空或 "latest" 时取最近训练的那一版。"""
+    runs_dir = layout.runs / "arknights"
+    if not name or name == "latest":
+        candidates = sorted(
+            (path for path in runs_dir.glob("*/weights/best.pt") if path.exists()),
+            key=lambda path: path.stat().st_mtime,
+        )
+        if not candidates:
+            raise SystemExit(f"找不到任何训练产物（{runs_dir}）；先 `radar train` 或传 --weights")
+        return candidates[-1]
+    candidate = runs_dir / name / "weights" / "best.pt"
     if not candidate.exists():
         raise SystemExit(f"找不到权重 {candidate}；先 `radar train` 或传 --weights")
     return candidate
@@ -1441,7 +1451,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--freeze", type=int, default=10)
     p.add_argument("--patience", type=int, default=60)
     p.add_argument("--project")
-    p.add_argument("--name", default="v0")
+    p.add_argument("--name", default="latest", help="用哪一版训练产物（默认最新）")
     p.add_argument("--device")
     p.add_argument("--workers", type=int, default=2,
                    help="dataloader 进程数（Windows 上默认 2，多了容易 OOM）")
@@ -1449,7 +1459,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("export", help="导出 ONNX / TensorRT")
     p.add_argument("--weights")
-    p.add_argument("--name", default="v0")
+    p.add_argument("--name", default="latest", help="用哪一版训练产物（默认最新）")
     p.add_argument("--fmt", default="onnx", choices=["onnx", "engine", "torchscript"])
     p.add_argument("--imgsz", type=int, default=1280)
     p.add_argument("--half", action="store_true")
@@ -1457,7 +1467,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("val", help="在 val 上验证")
     p.add_argument("--weights")
-    p.add_argument("--name", default="v0")
+    p.add_argument("--name", default="latest", help="用哪一版训练产物（默认最新）")
     p.add_argument("--data")
     p.add_argument("--imgsz", type=int, default=1280)
     p.add_argument("--split", default="val")
@@ -1477,7 +1487,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("predict", help="检测+跟踪 -> 场景图 JSONL")
     p.add_argument("--weights")
-    p.add_argument("--name", default="v0")
+    p.add_argument("--name", default="latest", help="用哪一版训练产物（默认最新）")
     p.add_argument("--src", required=True, help="视频或帧目录")
     p.add_argument("--out", help="输出 JSONL（默认 scene.jsonl）")
     p.add_argument("--imgsz", type=int, default=1280)

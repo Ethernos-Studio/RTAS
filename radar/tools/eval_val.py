@@ -13,6 +13,19 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def latest_weights(root: Path) -> Path:
+    """取最近训练的那一版权重（按 mtime）。"""
+    candidates = sorted(
+        (path for path in (root / "runs" / "arknights").glob("*/weights/best.pt") if path.exists()),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if not candidates:
+        raise SystemExit("找不到任何训练产物，先跑 `radar train`")
+    return candidates[-1]
+
+
+
 NAMES = {0: "enemy", 1: "ally", 2: "tile"}
 
 

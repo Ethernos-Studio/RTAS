@@ -16,8 +16,21 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def latest_weights(root: Path) -> Path:
+    """取最近训练的那一版权重（按 mtime）。"""
+    candidates = sorted(
+        (path for path in (root / "runs" / "arknights").glob("*/weights/best.pt") if path.exists()),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if not candidates:
+        raise SystemExit("找不到任何训练产物，先跑 `radar train`")
+    return candidates[-1]
+
+
+
 OUT = ROOT / "out"
-WEIGHTS = ROOT / "runs" / "arknights" / "v1" / "weights" / "best.pt"
+WEIGHTS = latest_weights(ROOT)
 DATASET = ROOT / "dataset"
 SIZE = (1280, 720)
 FPS = 30
