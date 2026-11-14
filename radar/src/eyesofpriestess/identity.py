@@ -27,8 +27,9 @@ MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 INPUT_SIZE = 224
 
-#: 相似度低于它就算"认不出"
-DEFAULT_MIN_SCORE = 0.55
+#: 相似度低于它就不再给编号——默认 0，即**永远给出最可能的编号**，
+#: 由调用方把分数一起显示出来（VLM 看分数自己判断可信度）
+DEFAULT_MIN_SCORE = 0.0
 #: top1 领先 top2 不足这个差值就报 ambiguous
 DEFAULT_MIN_MARGIN = 0.03
 
@@ -60,9 +61,11 @@ class Match:
 class Encoder:
     """torchvision 预训练骨干，输出 L2 单位化的特征向量。"""
 
-    def __init__(self, arch: str = "resnet18", device: str | None = None) -> None:
+    def __init__(self, arch: str = "resnet18", device: str | None = None,
+                 checkpoint: Path | str | None = None) -> None:
         self.arch = arch
         self.device = device
+        self.checkpoint = Path(checkpoint) if checkpoint else None
         self._model = None
         self._torch = None
 
@@ -78,6 +81,24 @@ class Encoder:
             ) from exc
 
         self._torch = torch
+
+        # 训练过的 embedding（tools/embed_train 产出）优先：它比 ImageNet 特征准得多
+        if self.checkpoint is not None:
+            if not self.checkpoint.exists():
+                raise FileNotFoundError(f"找不到 embedding 权重: {self.checkpoint}")
+            saved = torch.load(self.checkpoint, map_location="cpu")
+            backbone = models.resnet18(weights=None)
+            backbone.fc = torch.nn.Identity()
+            model = torch.nn.Sequential(
+                backbone, torch.nn.Flatten(), torch.nn.Linear(512, int(saved.get("dim", 256)))
+            )
+            model.load_state_dict(saved["state_dict"])
+            if self.device:
+                model = model.to(self.device)
+            model.eval()
+            self._model = model
+            return
+
         weights = "DEFAULT"
         if self.arch == "resnet18":
             model = models.resnet18(weights=models.ResNet18_Weights[weights])

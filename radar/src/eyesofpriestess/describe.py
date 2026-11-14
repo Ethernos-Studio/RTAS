@@ -83,8 +83,6 @@ class Describer:
             code = unit.get("code") or self.unknown
             score = unit.get("code_score")
             code_text = self.label_for(code) + (f"({score:.2f})" if isinstance(score, (int, float)) else "")
-            if unit.get("code_ambiguous"):
-                code_text += "?"
             track = unit.get("track_id")
             lines.append(
                 f"  #{track} {code_text} conf={unit.get('conf', 0):.2f} "

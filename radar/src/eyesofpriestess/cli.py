@@ -775,6 +775,49 @@ def cmd_val(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_embed_train(args: argparse.Namespace) -> int:
+    """训练敌人身份的 embedding（ArcFace），按视频划分训练/验证。"""
+    from .catalog import load_catalog
+    from .embed import TrainConfig, collect_crops, split_by_video, train_embedder
+    from .frames import load_manifest
+
+    layout = Layout.discover(args.root)
+    catalog = load_catalog(Path(args.catalog) if args.catalog else layout.root / "configs" / "enemies.json")
+    codes = [code for code, label in catalog.labels.items() if label.cls in ("enemy", "ally")]
+
+    items = collect_crops(layout.dataset / "crops", codes)
+    if not items:
+        print("错误: dataset/crops 里没有可用的裁图（先跑 radar build）", file=sys.stderr)
+        return 1
+
+    manifest = load_manifest(layout.manifest)
+    val_videos = set(args.validate_videos or [])
+    if not val_videos:
+        # 默认拿最新那段录像当验证集：按 manifest 里的视频顺序取最后一个
+        videos = []
+        for entry in manifest.values():
+            if entry.video not in videos:
+                videos.append(entry.video)
+        val_videos = {videos[-1]} if videos else set()
+
+    train_items, val_items = split_by_video(items, val_videos)
+    print(f"训练裁图 {len(train_items)} 张 / 验证裁图 {len(val_items)} 张（验证视频: {', '.join(sorted(val_videos))}）")
+
+    config = TrainConfig(
+        epochs=args.epochs,
+        batch_size=args.batch,
+        lr=args.lr,
+        margin=args.margin,
+        reference_dir=Path(args.reference) if args.reference else None,
+    )
+    out = Path(args.out) if args.out else layout.weights / "embedder.pt"
+    report = train_embedder(train_items, val_items, codes, out, config)
+
+    print(json.dumps({k: v for k, v in report.items() if k != "history"}, ensure_ascii=False, indent=2))
+    print(f"embedding 权重 -> {out}")
+    return 0
+
+
 def cmd_gallery_build(args: argparse.Namespace) -> int:
     """从 dataset/crops/<编号>/ 建身份图库（embedding 原型）。"""
     from .identity import Encoder, Gallery
@@ -785,7 +828,8 @@ def cmd_gallery_build(args: argparse.Namespace) -> int:
         print(f"错误: 找不到裁剪图目录 {crops_dir}（先跑 `radar build`）", file=sys.stderr)
         return 1
 
-    encoder = Encoder(args.arch, device=args.device)
+    encoder = Encoder(args.arch, device=args.device,
+                      checkpoint=Path(args.embedder) if getattr(args, 'embedder', None) else None)
     keep = None
     if not args.include_all:
         from .catalog import load_catalog
@@ -821,7 +865,8 @@ def cmd_identity_check(args: argparse.Namespace) -> int:
     layout = Layout.discover(args.root)
     catalog = load_catalog(args.catalog)
     gallery = Gallery.load(Path(args.gallery) if args.gallery else layout.weights / "gallery.npz")
-    encoder = Encoder(args.arch, device=args.device)
+    encoder = Encoder(args.arch, device=args.device,
+                      checkpoint=Path(args.embedder) if getattr(args, 'embedder', None) else None)
 
     if args.detector:
         from ultralytics import YOLO
@@ -894,11 +939,13 @@ def cmd_identity_check(args: argparse.Namespace) -> int:
                             [x, y, x + w, y + h])
                 if value > best_iou:
                     best_index, best_iou = index, value
+            # 只统计"检测到了并且能配上"的点：检测漏掉的属于检测器的问题，
+            # 不该算进身份匹配的准确率
+            if best_index < 0:
+                continue
             total += 1
             bucket = per_code.setdefault(expected, [0, 0])
             bucket[1] += 1
-            if best_index < 0:
-                continue
             match = matches[best_index]
             if match.ambiguous:
                 ambiguous += 1
@@ -1342,6 +1389,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", help="torch device（cuda:0 / cpu）")
     p.set_defaults(func=cmd_build)
 
+    p = sub.add_parser("embed-train", help="训练敌人身份的 embedding（ArcFace）")
+    p.add_argument("--epochs", type=int, default=30)
+    p.add_argument("--batch", type=int, default=32)
+    p.add_argument("--lr", type=float, default=3e-4)
+    p.add_argument("--margin", type=float, default=0.3)
+    p.add_argument("--out", help="输出权重（默认 weights/embedder.pt）")
+    p.add_argument("--embedder", help="训练好的 embedding 权重（默认 weights/embedder.pt）")
+    p.add_argument("--reference", default="reference/enemies", help="官方渲染图目录（当类锚点）")
+    p.add_argument("--validate-videos", nargs="*", help="验证集用的视频（默认最新一段）")
+    p.set_defaults(func=cmd_embed_train)
+
     p = sub.add_parser("gallery-build", help="从 dataset/crops 建身份图库（embedding 原型）")
     p.add_argument("--crops", help="裁剪图目录（默认 dataset/crops）")
     p.add_argument("--out", help="输出 npz（默认 weights/gallery.npz）")
@@ -1350,6 +1408,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-per-code", type=int, default=240)
     p.add_argument("--min-crops", type=int, default=5)
     p.add_argument("--prototypes", type=int, default=4, help="每类保留几个原型（覆盖动作/差分）")
+    p.add_argument("--embedder", help="训练好的 embedding 权重（默认 weights/embedder.pt）")
     p.add_argument("--reference", default="reference/enemies",
                    help="官方渲染参考图目录（每个编号一张 png，来自 tools/render_reference.py）")
     p.add_argument("--include-all", action="store_true",
@@ -1360,6 +1419,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--gallery")
     p.add_argument("--clicks")
     p.add_argument("--video", help="只评估这个视频的帧")
+    p.add_argument("--embedder", help="训练好的 embedding 权重（默认 weights/embedder.pt）")
     p.add_argument("--detector", help="用哪个检测器出框（默认用标注点附近的框）")
     p.add_argument("--imgsz", type=int, default=1280)
     p.add_argument("--conf", type=float, default=0.25)
