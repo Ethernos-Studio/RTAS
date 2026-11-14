@@ -76,6 +76,36 @@
       "tier": "normal",
       "cls": "enemy",
       "hotkey": "o"
+    },
+    "U1": {
+      "name": "第八章：刀兵",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "e"
+    },
+    "U3": {
+      "name": "第八章：猎狗",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "r"
+    },
+    "U7": {
+      "name": "第八章：术师",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "u"
+    },
+    "U9": {
+      "name": "第八章：重装",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "y"
+    },
+    "U17": {
+      "name": "斗士塔露拉（友军）",
+      "tier": "normal",
+      "cls": "ally",
+      "hotkey": "i"
     }
   },
   "special": {
