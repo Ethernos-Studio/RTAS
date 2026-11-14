@@ -12,7 +12,7 @@ VLM 看不了坐标——给它 ``{"box": [x, y, w, h]}`` 等于没给。所以�
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -38,6 +38,11 @@ class Describer:
     width: int = 1920
     height: int = 1080
     unknown: str = "未识别"
+    names: dict[str, str] = field(default_factory=dict)   # 编号 -> 中文名（VLM 读名字更省 token）
+
+    def label_for(self, code: str) -> str:
+        name = self.names.get(code)
+        return f"{code} {name}" if name else code
 
     def summarize(self, units: list[dict[str, Any]]) -> dict[str, Any]:
         enemies = [unit for unit in units if unit.get("cls") == "enemy"]
@@ -56,7 +61,7 @@ class Describer:
     def line(self, timestamp: float, summary: dict[str, Any]) -> str:
         if not summary["enemies"]:
             return f"t={timestamp:.1f}s：画面内没有敌人"
-        codes = "、".join(f"{code}×{count}" for code, count in
+        codes = "、".join(f"{self.label_for(code)}×{count}" for code, count in
                           sorted(summary["codes"].items(), key=lambda kv: -kv[1]))
         zones = "、".join(f"{zone} {count}" for zone, count in
                           sorted(summary["zones"].items(), key=lambda kv: -kv[1]))
@@ -77,7 +82,7 @@ class Describer:
             zone = zone_of(center_x, center_y, self.width, self.height)
             code = unit.get("code") or self.unknown
             score = unit.get("code_score")
-            code_text = f"{code}" + (f"({score:.2f})" if isinstance(score, (int, float)) else "")
+            code_text = self.label_for(code) + (f"({score:.2f})" if isinstance(score, (int, float)) else "")
             if unit.get("code_ambiguous"):
                 code_text += "?"
             track = unit.get("track_id")

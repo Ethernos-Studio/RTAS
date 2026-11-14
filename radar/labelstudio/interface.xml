@@ -5,20 +5,20 @@
   <KeyPointLabels name="pts" toName="img" strokeWidth="2">
     <Label value="B1" hotkey="a" background="#2a6" showAlias="false"/>  <!-- 源石虫 -->
     <Label value="B2" hotkey="s" background="#2a6" showAlias="false"/>  <!-- 源石虫·α -->
-    <Label value="1" hotkey="d" background="#2a6" showAlias="false"/>
-    <Label value="02" hotkey="f" background="#2a6" showAlias="false"/>
-    <Label value="A3" hotkey="g" background="#2a6" showAlias="false"/>
-    <Label value="D1" hotkey="h" background="#2a6" showAlias="false"/>
-    <Label value="17" hotkey="q" background="#2a6" showAlias="false"/>
-    <Label value="19" hotkey="j" background="#2a6" showAlias="false"/>
-    <Label value="21" hotkey="k" background="#2a6" showAlias="false"/>
-    <Label value="A9" hotkey="l" background="#2a6" showAlias="false"/>
-    <Label value="CS" hotkey="w" background="#fa4" showAlias="false"/>
-    <Label value="01" hotkey="o" background="#2a6" showAlias="false"/>  <!-- 1-9新敌人 -->
-    <Label value="U1" hotkey="e" background="#2a6" showAlias="false"/>  <!-- 第八章：刀兵 -->
-    <Label value="U3" hotkey="r" background="#2a6" showAlias="false"/>  <!-- 第八章：猎狗 -->
-    <Label value="U7" hotkey="u" background="#2a6" showAlias="false"/>  <!-- 第八章：术师 -->
-    <Label value="U9" hotkey="y" background="#2a6" showAlias="false"/>  <!-- 第八章：重装 -->
+    <Label value="1" hotkey="d" background="#2a6" showAlias="false"/>  <!-- 士兵 -->
+    <Label value="A3" hotkey="g" background="#2a6" showAlias="false"/>  <!-- 术师 -->
+    <Label value="D1" hotkey="h" background="#2a6" showAlias="false"/>  <!-- 妖怪 -->
+    <Label value="17" hotkey="q" background="#2a6" showAlias="false"/>  <!-- 暴徒 -->
+    <Label value="19" hotkey="j" background="#2a6" showAlias="false"/>  <!-- 机动盾兵 -->
+    <Label value="21" hotkey="k" background="#2a6" showAlias="false"/>  <!-- 拾荒者 -->
+    <Label value="A9" hotkey="l" background="#2a6" showAlias="false"/>  <!-- 鸡尾酒投掷者 -->
+    <Label value="CS" hotkey="w" background="#fa4" showAlias="false"/>  <!-- 弑君者 -->
+    <Label value="U1" hotkey="e" background="#2a6" showAlias="false"/>  <!-- 感染者纠察官 -->
+    <Label value="U3" hotkey="r" background="#2a6" showAlias="false"/>  <!-- 乌萨斯裂兽 -->
+    <Label value="U7" hotkey="u" background="#2a6" showAlias="false"/>  <!-- 乌萨斯着铠术师 -->
+    <Label value="U9" hotkey="y" background="#2a6" showAlias="false"/>  <!-- 乌萨斯突击者 -->
+    <Label value="O1" hotkey="o" background="#2a6" showAlias="false"/>  <!-- 猎狗 -->
+    <Label value="O2" hotkey="f" background="#2a6" showAlias="false"/>  <!-- 猎狗pro -->
     <Label value="other_enemy" hotkey="b" background="#2a6" showAlias="false"/>
     <Label value="U17" hotkey="i" background="#a6f" showAlias="false"/>
     <Label value="ally" hotkey="v" background="#a6f" showAlias="false"/>

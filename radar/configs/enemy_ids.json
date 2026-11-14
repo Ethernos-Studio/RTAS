@@ -1,0 +1,87 @@
+{
+  "B1": {
+    "enemy_id": "enemy_1007_slime",
+    "name": "源石虫",
+    "icon": "B1.png"
+  },
+  "B2": {
+    "enemy_id": "enemy_1007_slime_2",
+    "name": "源石虫·α",
+    "icon": "B2.png"
+  },
+  "1": {
+    "enemy_id": "enemy_1002_nsabr",
+    "name": "士兵",
+    "icon": "1.png"
+  },
+  "A3": {
+    "enemy_id": "enemy_1011_wizard",
+    "name": "术师",
+    "icon": "A3.png"
+  },
+  "D1": {
+    "enemy_id": "enemy_1005_yokai",
+    "name": "妖怪",
+    "icon": "D1.png"
+  },
+  "17": {
+    "enemy_id": "enemy_1027_mob",
+    "name": "暴徒",
+    "icon": "17.png"
+  },
+  "19": {
+    "enemy_id": "enemy_1029_shdsbr",
+    "name": "机动盾兵",
+    "icon": "19.png"
+  },
+  "21": {
+    "enemy_id": "enemy_1030_wteeth",
+    "name": "拾荒者",
+    "icon": "21.png"
+  },
+  "A9": {
+    "enemy_id": "enemy_1028_mocock",
+    "name": "鸡尾酒投掷者",
+    "icon": "A9.png"
+  },
+  "CS": {
+    "enemy_id": "enemy_1502_crowns",
+    "name": "弑君者",
+    "icon": "CS.png"
+  },
+  "U1": {
+    "enemy_id": "enemy_1107_uoffcr",
+    "name": "感染者纠察官",
+    "icon": "U1.png"
+  },
+  "U3": {
+    "enemy_id": "enemy_1108_uterer",
+    "name": "乌萨斯裂兽",
+    "icon": "U3.png"
+  },
+  "U7": {
+    "enemy_id": "enemy_1110_uamord",
+    "name": "乌萨斯着铠术师",
+    "icon": "U7.png"
+  },
+  "U9": {
+    "enemy_id": "enemy_1111_ucommd",
+    "name": "乌萨斯突击者",
+    "icon": "U9.png"
+  },
+  "U17": {
+    "enemy_id": "enemy_3002_ftrtal",
+    "name": "斗士塔露拉",
+    "icon": "U17.png"
+  },
+  "O1": {
+    "enemy_id": "enemy_1000_gopro",
+    "name": "猎狗",
+    "icon": "O1.png"
+  },
+  "O2": {
+    "enemy_id": "enemy_1000_gopro_2",
+    "name": "猎狗pro",
+    "icon": "O2.png"
+  }
+}

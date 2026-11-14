@@ -940,7 +940,11 @@ def cmd_describe(args: argparse.Namespace) -> int:
         return 1
 
     records = load_scene(scene)
-    describer = Describer(width=args.width, height=args.height)
+    layout = Layout.discover(args.root)
+    catalog_path = Path(args.catalog) if args.catalog else layout.root / "configs" / "enemies.json"
+    catalog = load_catalog(catalog_path)
+    names = {code: label.name for code, label in catalog.labels.items() if label.name}
+    describer = Describer(width=args.width, height=args.height, names=names)
     buckets = _bucketize(records, describer, args.every)
 
     lines: list[str] = []

@@ -1,0 +1,13 @@
+{
+    "log_file": "ArkUnpackerLogs.log",
+    "log_level": 3,
+    "min_spare_memory_mb": 256,
+    "performance_level": 2,
+    "usm_encoding": "gbk",
+    "usm_export_video_codec": "vp9",
+    "usm_export_audio_codec": "libvorbis",
+    "usm_export_video_ext": ".mkv",
+    "usm_export_audio_ext": ".ogg",
+    "export_encoding": "utf-8",
+    "export_json_indent": 4
+}

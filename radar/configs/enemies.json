@@ -9,103 +9,120 @@
       "name": "源石虫",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "a"
+      "hotkey": "a",
+      "enemy_id": "enemy_1007_slime"
     },
     "B2": {
       "name": "源石虫·α",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "s"
+      "hotkey": "s",
+      "enemy_id": "enemy_1007_slime_2"
     },
     "1": {
-      "name": "",
+      "name": "士兵",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "d"
-    },
-    "02": {
-      "name": "",
-      "tier": "normal",
-      "cls": "enemy",
-      "hotkey": "f"
+      "hotkey": "d",
+      "enemy_id": "enemy_1002_nsabr"
     },
     "A3": {
-      "name": "",
+      "name": "术师",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "g"
+      "hotkey": "g",
+      "enemy_id": "enemy_1011_wizard"
     },
     "D1": {
-      "name": "",
+      "name": "妖怪",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "h"
+      "hotkey": "h",
+      "enemy_id": "enemy_1005_yokai"
     },
     "17": {
-      "name": "",
+      "name": "暴徒",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "q"
+      "hotkey": "q",
+      "enemy_id": "enemy_1027_mob"
     },
     "19": {
-      "name": "",
+      "name": "机动盾兵",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "j"
+      "hotkey": "j",
+      "enemy_id": "enemy_1029_shdsbr"
     },
     "21": {
-      "name": "",
+      "name": "拾荒者",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "k"
+      "hotkey": "k",
+      "enemy_id": "enemy_1030_wteeth"
     },
     "A9": {
-      "name": "",
+      "name": "鸡尾酒投掷者",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "l"
+      "hotkey": "l",
+      "enemy_id": "enemy_1028_mocock"
     },
     "CS": {
-      "name": "",
+      "name": "弑君者",
       "tier": "leader",
       "cls": "enemy",
-      "hotkey": "w"
-    },
-    "01": {
-      "name": "1-9新敌人",
-      "tier": "normal",
-      "cls": "enemy",
-      "hotkey": "o"
+      "hotkey": "w",
+      "enemy_id": "enemy_1502_crowns"
     },
     "U1": {
-      "name": "第八章：刀兵",
+      "name": "感染者纠察官",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "e"
+      "hotkey": "e",
+      "enemy_id": "enemy_1107_uoffcr"
     },
     "U3": {
-      "name": "第八章：猎狗",
+      "name": "乌萨斯裂兽",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "r"
+      "hotkey": "r",
+      "enemy_id": "enemy_1108_uterer"
     },
     "U7": {
-      "name": "第八章：术师",
+      "name": "乌萨斯着铠术师",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "u"
+      "hotkey": "u",
+      "enemy_id": "enemy_1110_uamord"
     },
     "U9": {
-      "name": "第八章：重装",
+      "name": "乌萨斯突击者",
       "tier": "normal",
       "cls": "enemy",
-      "hotkey": "y"
+      "hotkey": "y",
+      "enemy_id": "enemy_1111_ucommd"
     },
     "U17": {
-      "name": "斗士塔露拉（友军）",
+      "name": "斗士塔露拉",
       "tier": "normal",
       "cls": "ally",
-      "hotkey": "i"
+      "hotkey": "i",
+      "enemy_id": "enemy_3002_ftrtal"
+    },
+    "O1": {
+      "name": "猎狗",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "o",
+      "enemy_id": "enemy_1000_gopro"
+    },
+    "O2": {
+      "name": "猎狗pro",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "f",
+      "enemy_id": "enemy_1000_gopro_2"
     }
   },
   "special": {
