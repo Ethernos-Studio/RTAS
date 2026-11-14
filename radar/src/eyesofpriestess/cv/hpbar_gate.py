@@ -1,14 +1,10 @@
-"""用血条颜色区分敌我：干员血条是绿/蓝，敌人是红。
+"""干员挡住敌人时，敌人的血条和干员的蓝条会挨在一起 —— 门控要保守。
 
-用户说得对——干员唯一稳定的共性是"脚下圆环 + 血条"，400 多种干员光看长相没法覆盖。
-那就别靠长相：**检测框正上方的血条颜色**才是稳定信号，
-W、维什戴尔、塔露拉、支援机械全都吃这一条（她们的血条也是队友色）。
-
-实现：取框上方一条窄带，找横向细长、颜色饱和的区域，按色相分类：
-  red   -> 敌人（保留）
-  green -> 干员/友方（丢弃）
-  blue  -> 干员/友方（丢弃，部分干员是蓝条）
-  None  -> 看不见血条（保留，宁可多留也别漏）
+规则改成：
+1. 在框上方窗口里同时找两种条；
+2. **只要找到敌方橙条就保留**（哪怕同时有蓝条 —— 说明有敌人被挡在干员那一格里）；
+3. 只有"只看到蓝条、没看到橙条"时才判为干员/友方丢丢弃；
+4. 什么都找不到 -> 保留（宁可多留，不能漏）。
 """
 
 from __future__ import annotations
@@ -19,51 +15,61 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
 sys.stdout.reconfigure(encoding="utf-8")
 
 
-def bar_color_at(image: np.ndarray, box, *, pad: int = 6, band: int = 26) -> str | None:
-    """看框正上方还有没有血条，返回 'red' / 'green' / 'blue' / None。"""
+def find_hp_bars(image: np.ndarray, box, *, above: int = 56, below: int = 14) -> dict[str, int]:
+    """返回 {归属: y} —— 该框附近找到的血条（同种取离框最近的一条）。"""
     import cv2
 
     height, width = image.shape[:2]
     x1, y1, x2, y2 = (int(round(v)) for v in box)
+    x1, x2 = max(0, x1), min(width, x2)
+    if x2 - x1 < 12:
+        return {}
+    box_width = x2 - x1
+    top = max(0, y1 - above)
+    bottom = min(height, y2 + below)
+    if bottom - top < 6:
+        return {}
 
-    top = max(0, y1 - band)
-    bottom = min(height, y1 + pad)
-    left = max(0, x1 - 4)
-    right = min(width, x2 + 4)
-    if bottom - top < 3 or right - left < 8:
-        return None
-
-    patch = image[top:bottom, left:right]
-    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+    strip = image[top:bottom, x1:x2]
+    hsv = cv2.cvtColor(strip, cv2.COLOR_BGR2HSV)
     hue, sat, val = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
-
+    colorful = (sat > 70) & (val > 90)
     masks = {
-        "red": (((hue <= 25) | (hue >= 170)) & (sat > 60) & (val > 60)),
-        "green": ((hue >= 35) & (hue <= 89) & (sat > 60) & (val > 60)),
-        "blue": ((hue >= 90) & (hue <= 140) & (sat > 60) & (val > 60)),
+        "ally": colorful & (hue >= 92) & (hue <= 118),      # 友方浅蓝
+        "enemy": colorful & (hue >= 4) & (hue <= 25),      # 敌方橙红
     }
 
-    best_name, best_score = None, 0.0
-    for name, mask in masks.items():
-        if not mask.any():
-            continue
-        rows = mask.sum(axis=1)
-        # 血条的特征：某一行里有一整段连续的同色像素（横条），不是零散噪点
-        row_max = int(rows.max())
-        ratio = row_max / max(1, patch.shape[1])
-        score = ratio * (row_max / max(1, patch.shape[0]))
-        if ratio > 0.35 and score > best_score:
-            best_name, best_score = name, score
-    return best_name
+    found: dict[str, int] = {}
+    min_run = int(box_width * 0.45)
+    for kind, mask in masks.items():
+        best_distance = 10 ** 9
+        for row in range(strip.shape[0]):
+            line = mask[row]
+            if line.sum() < min_run:
+                continue
+            run = longest = 0
+            for value in line:
+                run = run + 1 if value else 0
+                longest = max(longest, run)
+            if longest < min_run:
+                continue
+            y = top + row
+            # 血条通常就在框顶上方 2~12px；离框越近越可能是这个目标的
+            distance = abs(y1 - y)
+            if distance < best_distance:
+                best_distance = distance
+                found[kind] = y
+    return found
 
 
 def keep_as_enemy(image: np.ndarray, box) -> tuple[bool, str | None]:
-    """返回 (是否算敌人, 血条颜色)。绿/蓝条 = 干员/友方 -> 丢弃。"""
-    color = bar_color_at(image, box)
-    if color in ("green", "blue"):
-        return False, color
-    return True, color
+    bars = find_hp_bars(image, box)
+    if "enemy" in bars:
+        # 看到敌方血条就保留：哪怕同一格里有干员的蓝条（敌人被阻挡就是这种情况）
+        return True, "enemy"
+    if "ally" in bars:
+        return False, "ally"
+    return True, None
