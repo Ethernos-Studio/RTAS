@@ -133,7 +133,7 @@ class Catalog:
                 )
                 suffix = f"  <!-- {label.name} -->" if label.name else ""
                 lines.append(self._label_line(label, background) + suffix)
-        # 其余 4 个粗类（ally / tile / hp_bar_*）：有标签就配上
+        # 其余粗类（目前只有 ally）：有标签就配上
         for label in self.labels.values():
             if label.cls in ("enemy", "ignore"):
                 continue
