@@ -71,7 +71,57 @@ def find_game_window(keyword: str | None = None) -> WindowInfo | None:
                                 client=(left, top, width, height)))
         return True
     user32.EnumWindows(callback, 0)
-    return found[0] if found else None
+    if found:
+        return found[0]
+
+    # 兜底：按进程名找（游戏最小化后标题会读不到；RTAS 也会自己管理窗口）
+    import subprocess
+
+    try:
+        output = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq Arknights.exe", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+    except Exception:
+        output = ""
+    for line in output.splitlines():
+        parts = [item.strip('"') for item in line.split('","')]
+        if len(parts) < 2 or "Arknights" not in parts[0]:
+            continue
+        try:
+            pid = int(parts[1])
+        except ValueError:
+            continue
+        candidate = _main_window_of(pid)
+        if candidate:
+            title = candidate[0] or "Arknights"
+            left, top, width, height = _client_rect(candidate[1])
+            if width >= 320 and height >= 240:
+                return WindowInfo(hwnd=candidate[1], title=title,
+                                  class_name=candidate[2], client=(left, top, width, height))
+    return None
+
+
+def _main_window_of(pid: int) -> tuple[str, int, str] | None:
+    """按进程 id 找它的主窗口（标题可能为空）。"""
+    result: list[tuple[str, int, str]] = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+    def callback(hwnd, _lparam):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value != pid or not user32.IsWindowVisible(hwnd):
+            return True
+        length = user32.GetWindowTextLengthW(hwnd)
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buffer, length + 1)
+        class_buffer = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, class_buffer, 256)
+        result.append((buffer.value, hwnd, class_buffer.value))
+        return True
+
+    user32.EnumWindows(callback, 0)
+    return result[0] if result else None
 class WgcGrabber:
     """Windows Graphics Capture（复用 RTAS 的 wgc_python.dll）。"""
     def __init__(self, dll_path: Path, title: str, class_name: str) -> None:
@@ -273,19 +323,95 @@ def start_escape_watchdog(states: dict, root) -> None:
     _threading.Thread(target=loop, daemon=True).start()
 
 
+def run_layered_overlay(states: dict, source_name: str, duration: float = 0.0) -> None:
+    """纯 Win32 分层窗口：逐像素透明、点击穿透、位置每帧跟随游戏客户区。"""
+    from PIL import Image, ImageDraw, ImageFont
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from overlay_win32 import LayeredOverlay
+
+    def load_font(size: int):
+        for candidate in (r"C:\Windows\Fonts\msyhbd.ttc", r"C:\Windows\Fonts\msyh.ttc",
+                          r"C:\Windows\Fonts\simhei.ttf"):
+            try:
+                return ImageFont.truetype(candidate, size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
+
+    font = load_font(15)
+    hud_font = load_font(14)
+    overlay_window = LayeredOverlay()
+    hwnd = int(states.get("hwnd", 0))
+    deadline = time.time() + duration if duration > 0 else None
+
+    try:
+        while states.get("running", True):
+            if not overlay_window.pump():
+                break
+            if deadline is not None and time.time() > deadline:
+                break
+
+            # 只在游戏是前台窗口时显示：否则会把框画在别的程序上（很烦人）
+            foreground = user32.GetForegroundWindow()
+            if hwnd and foreground != hwnd:
+                user32.ShowWindow(overlay_window.hwnd, 0)      # SW_HIDE
+                time.sleep(0.1)
+                continue
+            user32.ShowWindow(overlay_window.hwnd, 4)          # SW_SHOWNOACTIVATE
+
+            left, top, width, height = _client_rect(hwnd) if hwnd else (0, 0, 0, 0)
+            if width <= 0 or height <= 0:          # 游戏最小化/关掉
+                user32.ShowWindow(overlay_window.hwnd, 0)
+                time.sleep(0.2)
+                continue
+
+            canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(canvas)
+            frame_w = states.get("frame_w") or width
+            frame_h = states.get("frame_h") or height
+            sx, sy = width / max(1, frame_w), height / max(1, frame_h)
+
+            for unit in states.get("units", []):
+                x, y, w, h = unit.box
+                x, y, w, h = x * sx, y * sy, w * sx, h * sy
+                label = f"#{unit.track_id} {unit.code}" if unit.code else f"#{unit.track_id}"
+                if unit.score:
+                    label += f"({unit.score:.2f})"
+                draw.rectangle([x, y, x + w, y + h], outline=(0, 255, 102, 235), width=2)
+                text_y = max(0, y - 20)
+                draw.text((x + 2, text_y), label, font=font, fill=(0, 255, 102, 255))
+            draw.text((8, 6), f"{source_name}  {states.get('fps', 0):.1f} FPS  "
+                              f"conf {states.get('conf', 0):.2f}",
+                      font=hud_font, fill=(255, 255, 90, 230))
+            if states.get("paused"):
+                draw.text((width // 2 - 40, 10), "PAUSED", font=font,
+                          fill=(255, 90, 90, 255))
+
+            overlay_window.draw(np.asarray(canvas), left, top)
+            time.sleep(0.033)
+    finally:
+        overlay_window.close()
+
+
 def run_ui(states: dict, source_name: str, overlay: bool, duration: float = 0.0) -> None:
+    """画框 + 跟随游戏窗口。
+
+    关键点：
+    * 叠加窗口的尺寸/位置**每帧都跟游戏客户区对齐**（RTAS 会移动窗口，启动时对一次没用）；
+    * 检测框是在"抓到的画面"坐标系里，要按 client_w/frame_w 缩放后才是叠加层坐标；
+    * 游戏最小化（客户区 0x0）时把叠加层藏起来，恢复后再显示。
+    """
     import tkinter as tk
     root = tk.Tk()
+    hwnd = int(states.get("hwnd", 0))
     if overlay:
-        # 叠加模式：无边框 + 置顶 + 颜色键透明 + 点击穿透，且**不抢焦点**
         root.overrideredirect(True)
         root.attributes("-topmost", True)
         root.attributes("-transparentcolor", TRANSPARENT_KEY)
         root.geometry(f"{states['width']}x{states['height']}+{states['left']}+{states['top']}")
     else:
-        # 调试模式：普通窗口，放在游戏右边，有标题栏，可以随便关
         root.title(f"EYESOFPRIESTESS · {source_name}")
-        # 调试窗口放到游戏右侧，避免糊在游戏上打断操作
         screen_w = root.winfo_screenwidth()
         debug_left = states['left'] + states['width'] + 24
         if debug_left + states['width'] > screen_w:
@@ -298,10 +424,39 @@ def run_ui(states: dict, source_name: str, overlay: bool, duration: float = 0.0)
     root.update_idletasks()
     if overlay:
         make_click_through(root)
+
+    def follow_window() -> tuple[int, int, int, int]:
+        """把叠加层挪到游戏客户区；返回最新客户区。"""
+        if not hwnd:
+            return states["left"], states["top"], states["width"], states["height"]
+        left, top, width, height = _client_rect(hwnd)
+        if width <= 0 or height <= 0:
+            return 0, 0, 0, 0
+        if (left, top, width, height) != (states["left"], states["top"],
+                                          states["width"], states["height"]):
+            states.update(left=left, top=top, width=width, height=height)
+            if overlay:
+                root.geometry(f"{width}x{height}+{left}+{top}")
+            canvas.config(width=width, height=height)
+        return left, top, width, height
+
     def redraw() -> None:
+        left, top, width, height = follow_window()
+        if width <= 0 or height <= 0:          # 游戏最小化
+            if overlay:
+                root.withdraw()
+            root.after(200, redraw)
+            return
+        if overlay and root.state() == "withdrawn":
+            root.deiconify()
         canvas.delete("all")
+        frame_w = states.get("frame_w") or width
+        frame_h = states.get("frame_h") or height
+        sx = width / max(1, frame_w)
+        sy = height / max(1, frame_h)
         for unit in states.get("units", []):
             x, y, w, h = unit.box
+            x, y, w, h = x * sx, y * sy, w * sx, h * sy
             label = f"#{unit.track_id} {unit.code}" if unit.code else f"#{unit.track_id}"
             if unit.score:
                 label += f"({unit.score:.2f})"
@@ -312,9 +467,10 @@ def run_ui(states: dict, source_name: str, overlay: bool, duration: float = 0.0)
                                       f"conf {states.get('conf', 0):.2f}", anchor="nw",
                            fill="#ffff66", font=("Consolas", 12))
         if states.get("paused"):
-            canvas.create_text(states["width"] // 2, 24, text="PAUSED", fill="#ff5555",
+            canvas.create_text(width // 2, 24, text="PAUSED", fill="#ff5555",
                                font=("Consolas", 16, "bold"))
         root.after(33, redraw)
+
     def on_key(event) -> None:
         if event.keysym == "Escape":
             states["running"] = False
@@ -324,12 +480,14 @@ def run_ui(states: dict, source_name: str, overlay: bool, duration: float = 0.0)
         elif event.keysym in ("Up", "Down"):
             delta = 0.05 if event.keysym == "Up" else -0.05
             states["conf"] = min(0.9, max(0.05, states.get("conf", 0.3) + delta))
+
     if duration > 0:
         root.after(int(duration * 1000), root.destroy)
     root.bind("<Key>", on_key)
     start_escape_watchdog(states, root)
     redraw()
     root.mainloop()
+
 # --------------------------------------------------------------------------- #
 # 主流程
 # --------------------------------------------------------------------------- #
@@ -374,7 +532,7 @@ def main() -> int:
             return 2
         left, top, width, height = info.client
         print(f"窗口: {info.title}  客户区 {width}x{height} @ ({left},{top})")
-        states.update(width=width, height=height, left=left, top=top)
+        states.update(width=width, height=height, left=left, top=top, hwnd=info.hwnd)
         source_name = info.title
         grabber = None
         if not args.no_wgc:
@@ -451,6 +609,7 @@ def main() -> int:
             states["units"] = units
             states["frames"] = states.get("frames", 0) + 1
             states["fps"] = 1.0 / max(1e-6, time.perf_counter() - start)
+            states["frame_w"], states["frame_h"] = frame.shape[1], frame.shape[0]
             if args.record:
                 if writer is None:
                     height, width = frame.shape[:2]
@@ -469,7 +628,10 @@ def main() -> int:
     worker_thread.start()
     try:
         overlay_mode = bool(args.overlay) and not args.window
-        run_ui(states, source_name, overlay=overlay_mode, duration=args.duration)
+        if overlay_mode:
+            run_layered_overlay(states, source_name, duration=args.duration)
+        else:
+            run_ui(states, source_name, overlay=False, duration=args.duration)
     finally:
         states["running"] = False
         worker_thread.join(timeout=3.0)
