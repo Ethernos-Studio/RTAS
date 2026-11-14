@@ -84,18 +84,29 @@ class BattleCamera:
         pitch_deg: float = 30.0,
         height: float = 9.125,
         y_offset: float = 0.286,
+        roll_deg: float = 0.0,
         near: float = 0.6,
         far: float = 100.0,
     ) -> "BattleCamera":
         """按"fov + 俯仰 + 高度"构造——合成数据渲染时改角度用这个。"""
         pitch = math.radians(pitch_deg)
+        roll = math.radians(roll_deg)
         cos_p, sin_p = math.cos(pitch), math.sin(pitch)
-        view = np.array([
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, cos_p, -sin_p, y_offset],
-            [0.0, -sin_p, -cos_p, -height],
-            [0.0, 0.0, 0.0, 1.0],
+        cos_r, sin_r = math.cos(roll), math.sin(roll)
+        tilt = np.array([
+            [1.0, 0.0, 0.0],
+            [0.0, cos_p, -sin_p],
+            [0.0, -sin_p, -cos_p],
         ], dtype=np.float64)
+        roll_matrix = np.array([
+            [cos_r, -sin_r, 0.0],
+            [sin_r, cos_r, 0.0],
+            [0.0, 0.0, 1.0],
+        ], dtype=np.float64)
+        view = np.eye(4, dtype=np.float64)
+        view[:3, :3] = roll_matrix @ tilt
+        view[1, 3] = y_offset
+        view[2, 3] = -height
         aspect = screen_w / screen_h
         focal = 1.0 / math.tan(math.radians(fov_deg) / 2.0)
         projection = np.array([
@@ -125,6 +136,87 @@ class BattleCamera:
         a, b = offset
         result = self.project((a - map_x, 0.0, map_y - b))
         return None if result is None else (result[0], result[1])
+
+
+    # -- 位姿拟合（不信任任何预置参数时用这个）----------------------------
+    @classmethod
+    def fit_pose(
+        cls,
+        correspondences: list[tuple[float, float, float, float]],
+        *,
+        screen_w: int = 1920,
+        screen_h: int = 1080,
+        init: dict | None = None,
+    ) -> tuple["BattleCamera", dict]:
+        """用「格子坐标 <-> 屏幕像素」对应点拟合 (fov, 俯仰, 高度, 横滚, a, b)。
+
+        坐标下降 + 步长减半，不依赖 SciPy。返回 (相机, 参数与残差报告)。
+        需要至少 6 组点、且点不能共线。
+        """
+        import math
+
+        if len(correspondences) < 6:
+            raise ValueError("至少需要 6 组对应点才拟合得出 6 个参数")
+
+        def project_with(params: dict, col: float, row: float):
+            camera = cls.from_pose(
+                screen_w=screen_w, screen_h=screen_h,
+                fov_deg=params["fov"], pitch_deg=params["pitch"],
+                height=params["height"], roll_deg=params["roll"],
+            )
+            return camera.project_map(col, row, (params["a"], params["b"]))
+
+        def loss(params: dict) -> float:
+            total = 0.0
+            for col, row, x, y in correspondences:
+                projected = project_with(params, col, row)
+                if projected is None:
+                    return float("inf")
+                total += (projected[0] - x) ** 2 + (projected[1] - y) ** 2
+            return total
+
+        params = {"fov": 40.0, "pitch": 30.0, "height": 9.0, "roll": 0.0, "a": 1.2, "b": 3.5}
+        if init:
+            params.update({key: float(value) for key, value in init.items()})
+
+        steps = {"fov": 8.0, "pitch": 8.0, "height": 3.0, "roll": 4.0, "a": 3.0, "b": 3.0}
+        best = loss(params)
+        for _ in range(40):
+            improved = True
+            while improved:
+                improved = False
+                for key, step in steps.items():
+                    for delta in (step, -step):
+                        candidate = dict(params)
+                        candidate[key] = params[key] + delta
+                        if key in ("fov", "height") and candidate[key] <= 1.0:
+                            continue
+                        value = loss(candidate)
+                        if value < best - 1e-9:
+                            params, best = candidate, value
+                            improved = True
+            steps = {key: value / 2.0 for key, value in steps.items()}
+            if max(steps.values()) < 1e-3:
+                break
+
+        residuals = []
+        for col, row, x, y in correspondences:
+            projected = project_with(params, col, row)
+            residuals.append(float("inf") if projected is None else
+                             ((projected[0] - x) ** 2 + (projected[1] - y) ** 2) ** 0.5)
+
+        camera = cls.from_pose(
+            screen_w=screen_w, screen_h=screen_h,
+            fov_deg=params["fov"], pitch_deg=params["pitch"],
+            height=params["height"], roll_deg=params["roll"],
+        )
+        report = {
+            "params": {key: round(value, 4) for key, value in params.items()},
+            "residual_mean_px": round(sum(residuals) / len(residuals), 2),
+            "residual_max_px": round(max(residuals), 2),
+            "points": len(correspondences),
+        }
+        return camera, report
 
     # -- 标定 -------------------------------------------------------------
     def fit_offset(self, correspondences: list[tuple[float, float, float, float]],
