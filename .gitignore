@@ -227,3 +227,7 @@ __temp__/
 
 cache/
 .workbuddy/
+# 训练产物 / 临时文件
+runs/
+__temp__/
+*.log

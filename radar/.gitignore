@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+
+# ===== 数据 / 产物（一律不入库）=====
+# 录像、抽帧、点击、数据集、训练产物、演示视频
+raw/
+frames/
+clicks/
+dataset/
+runs/
+out/
+
+# 模型权重 / 导出的引擎（几十 MB，按需下载，见 README）
+weights/*
+!weights/.gitkeep
+*.pt
+*.onnx
+*.engine
+*.zip
+
+# Label Studio 本地数据与导出（含账号数据，绝不入库）
+ls_data/
+ls_serve.log
+ls_export.json
+annotations_backup_*.json
+tasks/*.json
+!tasks/.gitkeep
+
+# 场景图 / 描述产物
+scene*.jsonl
+scene*.txt
+train_v*.log
+
+# 内网穿透客户端（二进制 + 含 token 的配置 + 压缩包，绝不入库）
+tools/frp_*

@@ -1,0 +1,12 @@
+# 数据集配置（参考用：`radar build` 会在 dataset/data.yaml 里生成带绝对路径的版本）
+#   dataset/images/{train,val}/*.jpg
+#   dataset/labels/{train,val}/*.txt    YOLO: cls cx cy w h（归一化）
+path: ./dataset
+train: images/train
+val: images/val
+names:
+  0: enemy
+  1: operator
+  2: tile
+  3: hp_bar_red
+  4: hp_bar_ally

@@ -1,0 +1,106 @@
+{
+  "_comment": "点击标签的唯一来源。key = 图鉴里显示的编号（游戏自带，跨语言稳定）；cls = 落到 YOLO 的粗类之一。新增敌人只需加一行，然后 `uv run radar ls-interface` 重新生成标注界面。两条设计约束：①玩家干员不标（部署位置 RTAS 本来就知道），只标自由移动的非玩家友方单位(ally)；②血条不标——血条用颜色阈值 CV 就能稳定拿到，不值得让模型学，也不该在标注里制造噪声。",
+  "classes": [
+    "enemy",
+    "ally",
+    "tile"
+  ],
+  "enemies": {
+    "B1": {
+      "name": "源石虫",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "a"
+    },
+    "B2": {
+      "name": "源石虫·α",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "s"
+    },
+    "1": {
+      "name": "",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "d"
+    },
+    "02": {
+      "name": "",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "f"
+    },
+    "A3": {
+      "name": "",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "g"
+    },
+    "D1": {
+      "name": "",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "h"
+    },
+    "17": {
+      "name": "",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "q"
+    },
+    "19": {
+      "name": "",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "j"
+    },
+    "21": {
+      "name": "",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "k"
+    },
+    "A9": {
+      "name": "",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "l"
+    },
+    "CS": {
+      "name": "",
+      "tier": "leader",
+      "cls": "enemy",
+      "hotkey": "w"
+    },
+    "01": {
+      "name": "1-9新敌人",
+      "tier": "normal",
+      "cls": "enemy",
+      "hotkey": "o"
+    }
+  },
+  "special": {
+    "ally": {
+      "cls": "ally",
+      "hotkey": "v"
+    },
+    "tile": {
+      "cls": "tile",
+      "hotkey": "t"
+    },
+    "other_enemy": {
+      "cls": "enemy",
+      "hotkey": "b"
+    }
+  },
+  "ignore": {
+    "IGNORE-occluded": {
+      "reason": "occluded",
+      "hotkey": "z"
+    },
+    "IGNORE-blurry": {
+      "reason": "blurry",
+      "hotkey": "x"
+    }
+  }
+}
