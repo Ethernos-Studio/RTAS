@@ -507,6 +507,8 @@ def main() -> int:
     parser.add_argument("--window", action="store_true", help="强制用普通窗口")
     parser.add_argument("--record", help="同时录制带框视频（mp4）")
     parser.add_argument("--duration", type=float, default=0.0, help="自动退出前跑多少秒（0=一直跑）")
+    parser.add_argument("--no-upscale", action="store_true",
+                   help="不做放大（默认把小于 1600 宽的画面放大到 1920 再推理）")
     parser.add_argument("--target-fps", type=float, default=20.0, help="抓屏节流（太高会和推理抢 CPU）")
     parser.add_argument("--no-wgc", action="store_true", help="强制用 PrintWindow 抓屏")
     args = parser.parse_args()
@@ -520,7 +522,7 @@ def main() -> int:
     warmup = np.zeros((720, 1280, 3), dtype=np.uint8)
     pipeline.step(warmup)
     print("预热完成，开始实时推理")
-    states: dict = {"running": True, "units": [], "fps": 0.0, "conf": args.conf,
+    states: dict = {"upscale": not args.no_upscale, "running": True, "units": [], "fps": 0.0, "conf": args.conf,
                     "paused": False, "width": 1280, "height": 720, "left": 80, "top": 80}
     grabber = None
     camera = None
@@ -605,6 +607,12 @@ def main() -> int:
                 continue
             pipeline.config.conf = states["conf"]
             start = time.perf_counter()
+            # 直播窗口通常比训练录像小（1024x576 vs 1920x1080）：敌人只有 25px，
+            # 而图库/embedding 是 40px 建的。先放大回训练尺度，检测和身份都稳得多。
+            if states.get("upscale", True) and frame.shape[1] < 1600:
+                target_w = 1920
+                target_h = int(round(frame.shape[0] * target_w / frame.shape[1]))
+                frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
             units = pipeline.step(frame)
             states["units"] = units
             states["frames"] = states.get("frames", 0) + 1
