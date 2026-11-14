@@ -1,5 +1,5 @@
 <!-- 由 `uv run radar ls-interface` 从 configs/enemies.json 生成，别手改 -->
-<!-- 方舟雷达 · 点选：先按热键选标签，再点目标；ignore 只点坐标，不出正样本 -->
+<!-- EYESOFPRIESTESS · 点选：先按热键选标签，再点目标；ignore 只点坐标，不出正样本 -->
 <View>
   <Image name="img" value="$image" zoom="true" zoomControl="true" rotateControl="false"/>
   <KeyPointLabels name="pts" toName="img" strokeWidth="2">
@@ -17,7 +17,6 @@
     <Label value="01" hotkey="o" background="#2a6" showAlias="false"/>  <!-- 1-9新敌人 -->
     <Label value="other_enemy" hotkey="b" background="#2a6" showAlias="false"/>
     <Label value="ally" hotkey="v" background="#a6f" showAlias="false"/>
-    <Label value="tile" hotkey="t" background="#6c8" showAlias="false"/>
     <Label value="IGNORE-occluded" hotkey="z" background="#f44" showAlias="false"/>
     <Label value="IGNORE-blurry" hotkey="x" background="#f44" showAlias="false"/>
   </KeyPointLabels>

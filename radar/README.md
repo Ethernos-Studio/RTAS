@@ -92,7 +92,6 @@ uv run radar ls-tasks         # frames/ -> tasks/ls_tasks.json
 |---|---|
 | `enemy` | 敌人（图鉴编号各自成标签，最终并到这一类） |
 | `ally` | **可自由移动的非玩家友方单位**（友军 NPC、召唤物） |
-| `tile` | 离散、不动的非敌非友战场物体（路障/装置/箱子）；**地面格子不标** |
 
 **玩家干员不标**：部署位置和编成 RTAS 侧本来就知道，模型再猜一遍是重复劳动，
 还会被技能/撤退动画误导。兵种身份也不训分类器，留给 embedding 图库。
@@ -118,7 +117,7 @@ uv run radar ls-serve --background   # 后台起，等它就绪后打印地址�
 1. **Create Project**，名字随意（如 `eyes-of-priestess`）；
 2. 进项目 → 右上 **Settings → Labeling Interface → Code**，
    把 `labelstudio/interface.xml` 的内容整个粘进去 → **Save**。
-   切到别的标签页应该能看到 18 个标签（编号 A/S/D/F… + ally/tile/血条/ignore）；
+   切到别的标签页应该能看到 16 个标签（编号 A/S/D/F… + ally/other_enemy/ignore）；
 3. 回项目 → **Import** → 选 `tasks/ls_tasks.json` → 确认，203 个任务进列表；
 4. **标注**：点开一个任务，
    - 先按热键选标签（`a`=B1 源石虫、`s`=B2、`d`=1、`f`=02、`g`=A3…），**再点目标**；
@@ -218,7 +217,8 @@ Instructions 面板（`uv run radar ls-sync-instruction --email ... --password .
 - **IGNORE-occluded**：可见部分 < 2/3、中心点被盖、或两个目标叠到分不出边界；
 - **IGNORE-blurry**：认不出兵种，或 < 20px 且边缘发糊；
 - **受击变红/闪白、小目标、边缘被裁一角** → 照常点编号，**不** ignore；
-- **`tile`** = 离散不动的非敌非友物体（路障/装置/箱子）；**地面格子不标**，装置血条也不单独标；
+- **场景物不标**：路障/装置的位置在游戏的地图数据里，模型不需要认；
+  地面格子、地图装饰（木箱堆、货架）也都不标；
 - 编号不认识 → `other_enemy`，别 ignore；
 - 一帧 ignore 超过 1/3 就直接 Skip 整帧。
 
@@ -278,7 +278,7 @@ uv run pytest -q           # 25 passed
 4. **极小目标**：mobile_sam 对 <30px 的目标经常整片 mask 失败，表现为 `box_ratio` 掉。
    先按 `--region` 只跑战场、`--downscale` 提速，再不行换 sam2 权重。
 5. **类别 id 顺序**：`dataset/data.yaml` 的 `names` 由 `configs/enemies.json` 的 `classes` 生成，
-   顺序是 enemy/ally/tile/hp_bar_red/hp_bar_ally，别手改。
+   顺序是 enemy/ally，别手改。
 6. **ignore 不删帧**：YOLO 没有 ignore 语义，但 `labels_ignore/` 必须留着——它是"此处有不可判定目标"
    的事实记录，删了会让数据集对密集怪群产生系统性盲区。
 7. **LS 1.23 起图片 404**：光设 `LOCAL_FILES_SERVING_ENABLED` 不够，

@@ -221,8 +221,8 @@ def test_build_creates_yolo_dataset(tmp_path, catalog):
     assert ignore_text.startswith("99 ")
 
     yaml_text = (dataset / "data.yaml").read_text(encoding="utf-8")
-    assert "enemy" in yaml_text and "ally" in yaml_text and "tile" in yaml_text
-    assert "hp_bar" not in yaml_text      # 血条不进检测类别（交给 CV）
+    assert "enemy" in yaml_text and "ally" in yaml_text
+    assert "tile" not in yaml_text and "hp_bar" not in yaml_text   # 场景物/血条都不进检测类别
 
     # 身份图库素材按图鉴编号分目录
     assert (dataset / "crops" / "B1").is_dir()

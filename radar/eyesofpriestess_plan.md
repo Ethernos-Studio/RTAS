@@ -83,7 +83,7 @@ append-only JSONL，只增不改，可回放可审计。所有环节消费它。
 - 小目标三件套：imgsz=1280（源石虫 40px，640 直接蒸发）、freeze=10 冻 backbone 防小数据过拟合、mosaic 拉满
 - copy-paste 离线做（offline_copypaste.py），按目标 tile 的透视尺度缩放——单应参数从 RTAS 取，贴第 4 排的虫自动比第 1 排小
 - COCO 预训练起步；导出 TensorRT fp16（4060 上 1280 输入三位数 FPS，决策环只要 5-10）
-- 粗类：enemy / ally / tile
+- 粗类：enemy / ally
   - 玩家干员不标（部署位置 RTAS 侧已知）；`ally` = 可自由移动的非玩家友方单位（友军 NPC、召唤物），才是雷达要补的未知量
   - 血条不进检测类别：半透明黑底 + 纯色填充，CV 颜色阈值直接拿，模型学它只会引入噪声（受击/技能会变色）
 - 备选（撞墙后再换）：RT-DETR-L / PP-YOLOE+
