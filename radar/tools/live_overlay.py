@@ -247,6 +247,32 @@ def make_click_through(window) -> None:
     hwnd = int(window.winfo_id())
     style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
     user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW)
+def start_escape_watchdog(states: dict, root) -> None:
+    """全局监听 Esc（GetAsyncKeyState 不需要窗口焦点）。
+
+    叠加层是点击穿透的，Tk 永远拿不到焦点，所以不能用 Tk 的键盘绑定当急停。
+    """
+    import ctypes as _ctypes
+    import threading as _threading
+    import time as _time
+
+    VK_ESCAPE = 0x1B
+    user32 = _ctypes.windll.user32
+
+    def loop() -> None:
+        while states.get("running", False):
+            if user32.GetAsyncKeyState(VK_ESCAPE) & 0x8000:
+                states["running"] = False
+                try:
+                    root.after(0, root.destroy)
+                except Exception:
+                    pass
+                return
+            _time.sleep(0.05)
+
+    _threading.Thread(target=loop, daemon=True).start()
+
+
 def run_ui(states: dict, source_name: str, overlay: bool, duration: float = 0.0) -> None:
     import tkinter as tk
     root = tk.Tk()
@@ -301,6 +327,7 @@ def run_ui(states: dict, source_name: str, overlay: bool, duration: float = 0.0)
     if duration > 0:
         root.after(int(duration * 1000), root.destroy)
     root.bind("<Key>", on_key)
+    start_escape_watchdog(states, root)
     redraw()
     root.mainloop()
 # --------------------------------------------------------------------------- #
@@ -317,7 +344,9 @@ def main() -> int:
     parser.add_argument("--imgsz", type=int, default=960)
     parser.add_argument("--conf", type=float, default=0.3)
     parser.add_argument("--wgc", default=str(DEFAULT_WGC), help="wgc_python.dll 路径")
-    parser.add_argument("--window", action="store_true", help="用普通窗口而不是透明叠加")
+    parser.add_argument("--overlay", action="store_true",
+                   help="透明叠加在游戏上（默认关闭：先跑 --window 调试，确认没问题再开）")
+    parser.add_argument("--window", action="store_true", help="强制用普通窗口")
     parser.add_argument("--record", help="同时录制带框视频（mp4）")
     parser.add_argument("--duration", type=float, default=0.0, help="自动退出前跑多少秒（0=一直跑）")
     parser.add_argument("--target-fps", type=float, default=20.0, help="抓屏节流（太高会和推理抢 CPU）")
@@ -439,7 +468,8 @@ def main() -> int:
     producer_thread.start()
     worker_thread.start()
     try:
-        run_ui(states, source_name, overlay=not args.window, duration=args.duration)
+        overlay_mode = bool(args.overlay) and not args.window
+        run_ui(states, source_name, overlay=overlay_mode, duration=args.duration)
     finally:
         states["running"] = False
         worker_thread.join(timeout=3.0)
