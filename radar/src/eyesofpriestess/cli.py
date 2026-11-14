@@ -426,9 +426,33 @@ def cmd_ls_init(args: argparse.Namespace) -> int:
     else:
         print(f"本地存储连接已存在: {frames_dir}")
     if existing_tasks and not args.force:
-        print(f"项目里已有 {existing_tasks} 个任务，跳过导入（要重导加 --force）")
-        print(f"\n打开标注入口: {base}/projects/{project_id}/data")
-        return 0
+        # 已有任务时**只补新增的帧**（按 frame 去重），别整体跳过：新录的视频要能增量加进来
+        existing_frames: set[str] = set()
+        page = 1
+        while True:
+            chunk = session.get(
+                f"{base}/api/projects/{project_id}/tasks?page={page}&page_size=500",
+                timeout=60,
+            ).json()
+            items = chunk.get("results") if isinstance(chunk, dict) else chunk
+            if not items:
+                break
+            for item in items:
+                frame = str((item.get("data") or {}).get("frame") or "")
+                if frame:
+                    existing_frames.add(frame)
+            if isinstance(chunk, dict) and not chunk.get("next"):
+                break
+            page += 1
+
+        pending = [task for task in tasks
+                   if str((task.get("data") or {}).get("frame") or "") not in existing_frames]
+        if not pending:
+            print(f"项目里已有 {existing_tasks} 个任务，没有新增帧，跳过导入")
+            print(f"\n打开标注入口: {base}/projects/{project_id}/data")
+            return 0
+        print(f"项目里已有 {existing_tasks} 个任务；补导入 {len(pending)} 个新帧")
+        tasks = pending
 
     imported = session.post(
         f"{base}/api/projects/{project_id}/import",
