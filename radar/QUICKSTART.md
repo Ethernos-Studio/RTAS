@@ -80,6 +80,27 @@ Instructions 面板（`uv run radar ls-sync-instruction --email ... --password .
 **只需点三样东西**：敌人本体（选图鉴编号）、非玩家友军（`ally`）、看不清就 ignore。
 血条、技能条、路障/装置、地面格子**一律不点**。
 
+## 4.5 自动标注（有内存 dump 就不用手点）
+
+如果手上有"从游戏里读出来的单位位置"（JSON / JSONL / CSV 都行，字段名宽容匹配），
+直接转成我们的点选格式：
+
+```powershell
+uv run python tools/auto_label_import.py --input dump.json --video v000_1-9 \
+    --out clicks/auto_v000_1-9.jsonl
+uv run radar build        # SAM 会把点精修成框
+```
+
+转换器做的事：
+
+- 字段别名归一（`key/name/enemy_id`、`sx/px/screen_x`、`t/time` …）；
+- `enemy_1000_gopro` / `gopro` / `O1` 都能映射到图鉴编号，认不出落 `other_enemy`；
+- 只有时间戳时用 `frames/manifest.jsonl` 找最近帧（默认容差 0.1s）；
+- **只产点、不产框**——让 SAM 去贴合精灵，顺带吃掉"脚底 vs Transform 原点"那 20~30px 的 y 偏差；
+- `op` 写成 `auto:<工具名>`，uid 按内容哈希，重复导入不会翻倍。
+
+已知边界：坐标必须落在 1920×1080 内（`--screen-size` 可改）；视频名必须和 manifest 里的一致。
+
 ## 5. 常见问题
 
 | 现象 | 原因/处理 |
