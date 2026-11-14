@@ -164,10 +164,13 @@ class Gallery:
         min_crops: int = 5,
         prototypes_per_code: int = 4,
         keep_codes: Iterable[str] | None = None,
+        diversity: float = 0.96,
     ) -> "Gallery":
         """从 ``dataset/crops/<编号>/*.png`` 建多原型图库。
 
         ``keep_codes`` 只保留这些编号（正常只放 enemy 类，别把 tile/ally 混进身份图库）。
+        ``diversity``：同一编号里两两相似度超过它的裁图只留一张——战斗裁图里大量是
+        "同一只怪同一姿势"的重复帧，全喂进去只会让原型塌成一团。
         """
         crops_dir = Path(crops_dir)
         allowed = {str(code) for code in keep_codes} if keep_codes is not None else None
@@ -190,12 +193,13 @@ class Gallery:
                 continue
 
             features = encoder.embed(images)
+            features, kept = _diversify(features, images, diversity)
             centres = _cluster(features, prototypes_per_code)
             for centre in centres:
                 unit = centre / max(float(np.linalg.norm(centre)), 1e-6)
                 codes.append(folder.name)
                 prototypes.append(unit.astype(np.float32))
-            samples[folder.name] = len(images)
+            samples[folder.name] = kept
 
         if not prototypes:
             raise RuntimeError(f"{crops_dir} 里没有足够的裁剪图（每类至少 {min_crops} 张）")
@@ -265,6 +269,39 @@ class Gallery:
         return "、".join(
             f"{code}×{self.samples.get(code, 0)}图/{counts[code]}原型" for code in self.unique_codes
         )
+
+
+def _diversify(
+    features: np.ndarray,
+    images: Sequence[np.ndarray],
+    threshold: float,
+) -> tuple[np.ndarray, int]:
+    """按"清晰度 × 面积"排序，再贪心丢掉和已选样本太像的重复裁图。
+
+    战斗裁图里同一只怪同一姿势会重复几十次；不筛的话 k-means 出来的原型全挤在一起。
+    """
+    if len(features) <= 2:
+        return features, len(features)
+
+    scores = []
+    for index, image in enumerate(images):
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+        sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        area = float(image.shape[0] * image.shape[1])
+        scores.append((sharpness * (area ** 0.5), index))
+
+    kept: list[int] = []
+    for _score, index in sorted(scores, reverse=True):
+        vector = features[index]
+        if any(float(vector @ features[other]) > threshold for other in kept):
+            continue
+        kept.append(index)
+        if len(kept) >= 120:
+            break
+
+    if not kept:
+        return features, 0
+    return features[kept], len(kept)
 
 
 def _cluster(features: np.ndarray, k: int) -> np.ndarray:
