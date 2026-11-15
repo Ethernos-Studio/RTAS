@@ -8,5 +8,5 @@ if not exist "%FRP_DIR%\frpc.exe" (
   exit /b 1
 )
 echo Starting frpc from %FRP_DIR%
-frpc.exe -c "%FRP_DIR%\frpc-radar.toml"
+%FRP_DIR%\frpc.exe -c "%FRP_DIR%\frpc-radar.toml"
 pause

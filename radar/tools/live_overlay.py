@@ -526,7 +526,7 @@ def main() -> int:
     warmup = np.zeros((720, 1280, 3), dtype=np.uint8)
     pipeline.step(warmup)
     print("预热完成，开始实时推理")
-    states: dict = {"bar_gate": bool(args.bar_gate), "upscale": not args.no_upscale, "running": True, "units": [], "fps": 0.0, "conf": args.conf,
+    states: dict = {"feed": args.feed, "bar_gate": bool(args.bar_gate), "upscale": not args.no_upscale, "running": True, "units": [], "fps": 0.0, "conf": args.conf,
                     "paused": False, "width": 1280, "height": 720, "left": 80, "top": 80}
     grabber = None
     camera = None
@@ -611,6 +611,13 @@ def main() -> int:
                 continue
             pipeline.config.conf = states["conf"]
             start = time.perf_counter()
+            if states.get("feed"):
+                fed = read_feed(Path(states["feed"]))
+                if fed:
+                    states["units"] = fed
+                    states["frames"] = states.get("frames", 0) + 1
+                    states["fps"] = 1.0 / max(1e-6, time.perf_counter() - start)
+                    continue
             # 直播窗口通常比训练录像小（1024x576 vs 1920x1080）：敌人只有 25px，
             # 而图库/embedding 是 40px 建的。先放大回训练尺度，检测和身份都稳得多。
             if states.get("upscale", True) and frame.shape[1] < 1600:
@@ -671,6 +678,38 @@ def main() -> int:
         import os
         os._exit(0)
     return 0
+
+def read_feed(path: Path, max_age: float = 1.0) -> list:
+    """读外部敌人数据（JSON）：{"t": 12.5, "enemies": [{code, screen_x, screen_y, box_w, box_h, uid}]}。
+
+    读不到 / 过期 / 格式不对 都返回空列表，调用方回落到视觉检测。
+    主仓库只认这个契约，不关心数据是怎么来的。
+    """
+    import json
+    import time
+
+    try:
+        if not path.exists() or (time.time() - path.stat().st_mtime) > max_age:
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    units = []
+    for index, item in enumerate(payload.get("enemies") or []):
+        try:
+            x = float(item["screen_x"])
+            y = float(item["screen_y"])
+            width = float(item.get("box_w") or 80)
+            height = float(item.get("box_h") or 80)
+        except (KeyError, TypeError, ValueError):
+            continue
+        units.append(Unit(box=(int(x - width / 2), int(y - height / 2), int(width), int(height)),
+                          code=str(item.get("code") or ""),
+                          score=float(item.get("score") or 0.0),
+                          conf=float(item.get("conf") or 1.0),
+                          track_id=int(item.get("uid") or index)))
+    return units
+
 def _latest_weights() -> Path:
     candidates = sorted(
         (path for path in (ROOT / "runs" / "arknights").glob("*/weights/best.pt") if path.exists()),
